@@ -1,0 +1,248 @@
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
+const { normalizeFfmpegPath } = require("./obsRecordingService");
+
+const previewPath = "/hls/obs-preview/index.m3u8";
+
+class ObsPreviewService {
+  constructor(webRootPath) {
+    this.previewRoot = path.join(webRootPath, "hls", "obs-preview");
+    fs.mkdirSync(this.previewRoot, { recursive: true });
+    this.process = null;
+    this.status = {
+      isRunning: false,
+      startedAt: null,
+      previewUrl: previewPath,
+      lastMessage: null,
+    };
+  }
+
+  async start(request) {
+    if (!request.inputUrl || !String(request.inputUrl).trim()) {
+      throw new Error("OBS recording URL is required before preview can start.");
+    }
+
+    if (this.isProcessRunning()) {
+      return this.status;
+    }
+
+    this.cleanPreviewFiles();
+
+    const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
+    const playlistPath = path.join(this.previewRoot, "index.m3u8");
+    const sessionId = String(Date.now());
+    const segmentPattern = path.join(this.previewRoot, `segment-${sessionId}-%05d.ts`);
+    const args = [
+      "-hide_banner",
+      "-loglevel", "warning",
+      "-i", String(request.inputUrl).trim(),
+      "-map", "0:v:0",
+      "-map", "0:a?",
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-tune", "zerolatency",
+      "-profile:v", "main",
+      "-pix_fmt", "yuv420p",
+      "-g", "60",
+      "-keyint_min", "60",
+      "-sc_threshold", "0",
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-f", "hls",
+      "-hls_time", "2",
+      "-hls_list_size", "10",
+      "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments",
+      "-hls_delete_threshold", "10",
+      "-hls_segment_filename", segmentPattern,
+      playlistPath,
+    ];
+
+    try {
+      this.process = spawn(ffmpegPath, args, {
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      this.process = null;
+      this.status = { ...this.status, isRunning: false, lastMessage: error.message };
+      throw new Error(`Unable to start FFmpeg preview at '${ffmpegPath}'.`);
+    }
+
+    const startedProcess = this.process;
+
+    startedProcess.stderr.on("data", (chunk) => {
+      const message = chunk.toString().trim();
+      if (message) {
+        this.status = { ...this.status, lastMessage: message };
+      }
+    });
+
+    startedProcess.on("error", (error) => {
+      this.status = { ...this.status, isRunning: false, startedAt: null, lastMessage: error.message };
+      if (this.process === startedProcess) {
+        this.process = null;
+      }
+    });
+
+    startedProcess.on("exit", () => {
+      this.status = { ...this.status, isRunning: false, lastMessage: explainFfmpegMessage(this.status.lastMessage || "Preview FFmpeg stopped.") };
+      this.process = null;
+    });
+
+    this.status = {
+      isRunning: true,
+      startedAt: new Date().toISOString(),
+      previewUrl: `${previewPath}?v=${sessionId}`,
+      lastMessage: null,
+    };
+
+    await waitForFfmpegStartup(startedProcess, ffmpegPath, "Preview FFmpeg", () => this.status.lastMessage);
+
+    try {
+      await waitForPlaylistFile(startedProcess, playlistPath, () => this.status.lastMessage);
+    } catch (error) {
+      this.stop();
+      this.status = { ...this.status, isRunning: false, lastMessage: error.message };
+      throw error;
+    }
+
+    return this.status;
+  }
+
+  stop() {
+    if (!this.process) {
+      this.status = { ...this.status, isRunning: false };
+      return this.status;
+    }
+
+    const processToStop = this.process;
+
+    if (!processToStop.killed) {
+      try {
+        processToStop.stdin.write("q\n");
+      } catch {
+        // Fall back to terminating below.
+      }
+
+      setTimeout(() => {
+        if (this.process === processToStop && !processToStop.killed) {
+          processToStop.kill("SIGKILL");
+        }
+      }, 5000).unref();
+    }
+
+    this.process = null;
+    this.status = { ...this.status, isRunning: false, lastMessage: "Preview stopped." };
+    return this.status;
+  }
+
+  isProcessRunning() {
+    return Boolean(this.process && !this.process.killed && this.process.exitCode === null && this.process.signalCode === null);
+  }
+
+  cleanPreviewFiles() {
+    for (const fileName of fs.readdirSync(this.previewRoot)) {
+      fs.rmSync(path.join(this.previewRoot, fileName), { force: true, recursive: true });
+    }
+  }
+}
+
+module.exports = {
+  ObsPreviewService,
+};
+
+function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      process.off("error", onError);
+      process.off("exit", onExit);
+    };
+
+    const fail = (message) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      reject(new Error(message));
+    };
+
+    const onError = (error) => {
+      fail(`Unable to start ${label} at '${ffmpegPath}'. ${error.message}`);
+    };
+
+    const onExit = (code, signal) => {
+      const detail = explainFfmpegMessage(getLastMessage?.());
+      fail(`${label} stopped before preview could start${formatExit(code, signal)}.${detail ? ` ${detail}` : " Check the FFmpeg path and OBS stream URL."}`);
+    };
+
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve();
+    }, 750);
+
+    process.once("error", onError);
+    process.once("exit", onExit);
+  });
+}
+
+function formatExit(code, signal) {
+  const parts = [];
+
+  if (code !== null) {
+    const signedCode = code > 2147483647 ? code - 4294967296 : code;
+    parts.push(`exit code ${signedCode}${signedCode !== code ? ` (${code})` : ""}`);
+  }
+
+  if (signal) {
+    parts.push(signal);
+  }
+
+  return parts.length ? ` (${parts.join(", ")})` : "";
+}
+
+function waitForPlaylistFile(process, playlistPath, getLastMessage) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const timeoutMs = 12000;
+
+    const check = () => {
+      if (fs.existsSync(playlistPath) && fs.statSync(playlistPath).size > 0) {
+        resolve();
+        return;
+      }
+
+      if (process.exitCode !== null || process.signalCode !== null || process.killed) {
+        reject(new Error(explainFfmpegMessage(getLastMessage() || "Preview FFmpeg stopped before creating the HLS playlist.")));
+        return;
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        reject(new Error(explainFfmpegMessage(getLastMessage() || "Preview HLS playlist was not created. Check that OBS is actively streaming to the configured recording URL.")));
+        return;
+      }
+
+      setTimeout(check, 250).unref();
+    };
+
+    check();
+  });
+}
+
+function explainFfmpegMessage(message) {
+  if (message && message.toLowerCase().includes("error opening input")) {
+    return `${message} Check that OBS is streaming to rtmp://127.0.0.1:1935/live with stream key emerald, then start recording again.`;
+  }
+
+  return message;
+}

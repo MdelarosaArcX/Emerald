@@ -84,6 +84,24 @@ const loadSettings = () => {
   }
 };
 
+const loadIngestStatus = async () => {
+  try {
+    const response = await fetch("/api/rtmp-ingest/status", { cache: "no-store" });
+
+    if (!response.ok) {
+      return;
+    }
+
+    const status = await response.json();
+
+    if (status?.lastMessage) {
+      setMessage(status.lastMessage);
+    }
+  } catch {
+    // The recorder can still run against an external OBS URL.
+  }
+};
+
 const startServerPreview = async () => {
   const response = await fetch("/api/obs-preview/start", {
     method: "POST",
@@ -128,7 +146,9 @@ const copySharePreviewUrl = async () => {
 
 const waitForPlaylist = async (playlistUrl) => {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const response = await fetch(`${playlistUrl}?t=${Date.now()}`, { cache: "no-store" });
+    const cacheBustedUrl = new URL(playlistUrl, window.location.origin);
+    cacheBustedUrl.searchParams.set("t", String(Date.now()));
+    const response = await fetch(cacheBustedUrl.toString(), { cache: "no-store" });
 
     if (response.ok) {
       return;
@@ -177,6 +197,8 @@ const playPreviewUrl = async (previewUrl) => {
         }
       });
     });
+  } else if (previewUrl.toLowerCase().includes(".m3u8") && !previewVideo.canPlayType("application/vnd.apple.mpegurl")) {
+    throw new Error("HLS preview player is unavailable. Check that /lib/hls.js/hls.min.js loads from this server.");
   } else {
     previewVideo.src = previewUrl;
   }
@@ -388,6 +410,7 @@ copyPreviewUrlButton?.addEventListener("click", copySharePreviewUrl);
 
 loadSettings();
 refreshSharePreviewUrl();
+loadIngestStatus();
 pollStatus();
 loadSegments();
 restoreServerPreview();
