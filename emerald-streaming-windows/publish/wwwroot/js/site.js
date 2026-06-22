@@ -84,6 +84,24 @@ const loadSettings = () => {
   }
 };
 
+const loadIngestStatus = async () => {
+  try {
+    const response = await fetch("/api/rtmp-ingest/status", { cache: "no-store" });
+
+    if (!response.ok) {
+      return;
+    }
+
+    const status = await response.json();
+
+    if (status?.lastMessage) {
+      setMessage(status.lastMessage);
+    }
+  } catch {
+    // The recorder can still run against an external OBS URL.
+  }
+};
+
 const startServerPreview = async () => {
   const response = await fetch("/api/obs-preview/start", {
     method: "POST",
@@ -388,6 +406,7 @@ copyPreviewUrlButton?.addEventListener("click", copySharePreviewUrl);
 
 loadSettings();
 refreshSharePreviewUrl();
+loadIngestStatus();
 pollStatus();
 loadSegments();
 restoreServerPreview();

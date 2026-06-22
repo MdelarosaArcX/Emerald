@@ -20,11 +20,11 @@ Usage:
   sudo ./install-emerald.sh --source /path/to/publish [options]
 
 Options:
-  --source PATH          Required. Published Emerald.Streaming folder.
+  --source PATH          Required. Published Emerald.Streaming Node app folder.
   --app-dir PATH         Default: /opt/emerald-streaming
   --domain NAME         Configure Nginx server_name. Enables Nginx config.
   --with-nginx          Configure Nginx reverse proxy on port 80.
-  --install-packages    Install nginx, ffmpeg, and rsync with apt.
+  --install-packages    Install nginx, ffmpeg, nodejs, npm, and rsync with apt.
   -h, --help            Show this help.
 
 Example:
@@ -73,18 +73,28 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 if [[ -z "${SOURCE_DIR}" || ! -d "${SOURCE_DIR}" ]]; then
-  echo "--source must point to a published Emerald.Streaming folder." >&2
+  echo "--source must point to a published Emerald.Streaming Node app folder." >&2
   exit 1
 fi
 
-if [[ ! -f "${SOURCE_DIR}/Emerald.Streaming.dll" ]]; then
-  echo "Emerald.Streaming.dll was not found in ${SOURCE_DIR}. Run dotnet publish first." >&2
+if [[ ! -f "${SOURCE_DIR}/server.js" || ! -f "${SOURCE_DIR}/package.json" ]]; then
+  echo "server.js and package.json were not found in ${SOURCE_DIR}. Build or copy the Node app first." >&2
   exit 1
 fi
 
 if [[ "${INSTALL_PACKAGES}" == "true" ]]; then
   apt-get update
-  apt-get install -y nginx ffmpeg rsync
+  apt-get install -y nginx ffmpeg nodejs npm rsync
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "node was not found. Install Node.js 20+ before installing Emerald Streaming." >&2
+  exit 1
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm was not found. Install npm or build a package that already includes node_modules." >&2
+  exit 1
 fi
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
@@ -106,6 +116,7 @@ if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete \
     --exclude "Recordings/" \
     --exclude "wwwroot/hls/" \
+    --exclude "Recordings/" \
     "${SOURCE_DIR}/" "${APP_DIR}/"
 else
   find "${APP_DIR}" -mindepth 1 \
@@ -121,22 +132,18 @@ else
 fi
 mkdir -p "${APP_DIR}/Recordings" "${APP_DIR}/wwwroot/hls/obs-preview"
 
-if [[ -f "${APP_DIR}/Emerald.Streaming" ]]; then
-  chmod +x "${APP_DIR}/Emerald.Streaming"
-  EXEC_START="${APP_DIR}/Emerald.Streaming"
-elif command -v dotnet >/dev/null 2>&1; then
-  EXEC_START="/usr/bin/dotnet ${APP_DIR}/Emerald.Streaming.dll"
-else
-  echo "dotnet was not found and this publish is not self-contained. Install ASP.NET Core Runtime 10 or rebuild the .run as self-contained." >&2
-  exit 1
+if [[ ! -d "${APP_DIR}/node_modules" ]]; then
+  npm install --omit=dev --prefix "${APP_DIR}"
 fi
+
+EXEC_START="$(command -v node) ${APP_DIR}/server.js"
 
 if [[ -f "./emerald.env" ]]; then
   install -m 0644 "./emerald.env" "${CONFIG_DIR}/emerald.env"
 elif [[ ! -f "${CONFIG_DIR}/emerald.env" ]]; then
   cat > "${CONFIG_DIR}/emerald.env" <<EOF
-ASPNETCORE_ENVIRONMENT=Production
-ASPNETCORE_URLS=http://127.0.0.1:5000
+EMERALD_URLS=http://127.0.0.1:5000
+NODE_ENV=production
 EOF
 fi
 

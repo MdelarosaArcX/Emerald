@@ -1,5 +1,6 @@
 **/bin/
 **/obj/
+**/node_modules/
 Emerald.Streaming/Recordings/
 Emerald.Streaming/wwwroot/hls/*
 !Emerald.Streaming/wwwroot/hls/.gitkeep

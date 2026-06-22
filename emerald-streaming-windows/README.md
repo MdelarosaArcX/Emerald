@@ -16,7 +16,7 @@ This creates:
 emerald-streaming-windows.zip
 ```
 
-By default this is a self-contained `win-x64` package, so the target machine does not need `dotnet` installed.
+The package includes the Node app and production npm dependencies. The target machine needs Node.js 20+ and FFmpeg installed.
 
 ## Install On Windows
 
@@ -37,6 +37,13 @@ The app listens locally on:
 
 ```text
 http://127.0.0.1:5000
+```
+
+In OBS, use:
+
+```text
+Server: rtmp://127.0.0.1:1935/live
+Stream Key: emerald
 ```
 
 To listen on all network interfaces:

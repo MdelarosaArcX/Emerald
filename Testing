@@ -1,29 +1,31 @@
-Run the ASP.NET Core app:
+Run the Node.js app:
 
 cd "C:\Users\asus tuf a15\Documents\Project\Work\ArcX\Project\Emerald\Emerald.Streaming"
-dotnet run --launch-profile http
+npm install
+npm start
 
 Open:
 
-http://localhost:5248
+http://127.0.0.1:5000
 
-If dotnet run fails because Emerald.Streaming.exe is locked:
+If the port is already in use:
 
-Get-Process Emerald.Streaming -ErrorAction SilentlyContinue
+Get-Process node -ErrorAction SilentlyContinue
 Stop-Process -Id <PROCESS_ID>
-dotnet run --launch-profile http
 
 OBS recording workflow:
 
 1. Install FFmpeg and make sure ffmpeg is available on PATH.
 2. Configure OBS to stream to a local ingest URL.
-   Example recording URL:
-   rtmp://127.0.0.1/live/emerald
+   Server:
+   rtmp://127.0.0.1:1935/live
+   Stream key:
+   emerald
 3. Enter the OBS Recording URL in the app.
-4. Optional: enter a browser-playable preview URL such as HLS.
-   RTMP is recordable by FFmpeg, but browsers usually cannot preview RTMP directly.
-5. Click Start OBS Preview + Recording.
-6. The server records 2-minute segments into:
+   Default recording URL:
+   rtmp://127.0.0.1:1935/live/emerald
+4. Click Start OBS Preview + Recording.
+5. The server records segmented files into:
    Emerald.Streaming\Recordings
 
 The recorder uses FFmpeg stream copy:
@@ -31,38 +33,3 @@ The recorder uses FFmpeg stream copy:
 ffmpeg -i <OBS_URL> -map 0 -c copy -f segment -segment_time 120 -reset_timestamps 1 -strftime 1 obs-%Y%m%d-%H%M%S.mp4
 
 Because it uses -c copy, the recorded files keep the OBS encoded stream codec, FPS, and bitrate instead of browser re-encoding.
-
-
-For your first webcam test, I would build:
-A small ASP.NET Core app.
-A browser page that uses navigator.mediaDevices.getUserMedia().
-A preview <video> element.
-Recording using either:browser MediaRecorder for quick testing, or
-send media to the C# backend for server-side recording.
-
-For production with DELTACAST, I’d avoid making the browser responsible for capture. Instead:
-DELTACAST card -> C# capture worker -> encoder -> WebRTC/HLS stream -> browser
-                                      -> MP4/MKV recording
-Best practical path:
-Phase 1: Browser webcam preview + record locally/server upload.
-Phase 2: ASP.NET Core backend controls recording sessions.
-Phase 3: Replace webcam source with DELTACAST SDK capture.
-Phase 4: Add streaming output: WebRTC for low latency, HLS for broader compatibility.
-One important note: if your goal is truly cross-platform, the browser frontend can be cross-platform, but the DELTACAST capture part depends on the vendor SDK and drivers available for each OS. So design it as a pluggable capture source:
-public interface IVideoSource
-{
-    Task StartAsync();
-    Task StopAsync();
-    IAsyncEnumerable<VideoFrame> ReadFramesAsync();
-}
-Then implement:
-WebcamVideoSource
-DeltacastVideoSource
-FileVideoSource
-TestPatternVideoSource
-That keeps your app clean: test with webcam now, swap in DELTACAST later without rewriting the UI.
-
-
-http://localhost:5248
-cd Emerald.Streaming
-dotnet run --launch-profile http

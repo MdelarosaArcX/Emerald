@@ -1,9 +1,7 @@
 param(
     [string]$ProjectPath = "Emerald.Streaming",
     [string]$OutputPath = "emerald-streaming.run",
-    [string]$Configuration = "Release",
-    [string]$Runtime = "linux-x64",
-    [switch]$FrameworkDependent
+    [switch]$SkipInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,22 +20,38 @@ New-Item -ItemType Directory -Force -Path $publish, $installer | Out-Null
 function Invoke-CheckedCommand {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$FilePath,
+        [string]$Command,
         [Parameter(Mandatory = $true)]
-        [string[]]$ArgumentList
+        [string[]]$CommandArguments
     )
 
-    & $FilePath @ArgumentList
+    & $Command @CommandArguments
     if ($LASTEXITCODE -ne 0) {
-        throw "$FilePath failed with exit code $LASTEXITCODE"
+        throw "$Command failed with exit code $LASTEXITCODE"
     }
 }
 
-if ($FrameworkDependent) {
-    Invoke-CheckedCommand dotnet @("publish", $project, "-c", $Configuration, "-o", $publish)
-}
-else {
-    Invoke-CheckedCommand dotnet @("publish", $project, "-c", $Configuration, "-r", $Runtime, "--self-contained", "true", "-o", $publish)
+$exclude = @("node_modules", "Recordings", "bin", "obj", "Pages", "Properties")
+Get-ChildItem -LiteralPath $project -Force |
+    Where-Object { $exclude -notcontains $_.Name } |
+    Copy-Item -Destination $publish -Recurse -Force
+
+Remove-Item -Recurse -Force (Join-Path $publish "wwwroot\hls") -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path (Join-Path $publish "wwwroot\hls") | Out-Null
+
+if (-not $SkipInstall) {
+    $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    $npm = if ($npmCommand) { $npmCommand.Source } else { "npm" }
+    Push-Location $publish
+    try {
+        & $npm install --omit=dev
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm install failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        Pop-Location
+    }
 }
 
 Copy-Item (Join-Path $PSScriptRoot "install-emerald.sh") $installer

@@ -16,13 +16,7 @@ This creates:
 emerald-streaming.run
 ```
 
-By default this is a self-contained `linux-x64` installer, so the Linux server does not need `dotnet` installed.
-
-For an ARM64 Linux server:
-
-```powershell
-.\deploy\linux\make-run-installer.ps1 -Runtime linux-arm64
-```
+The installer includes the Node app and production npm dependencies. The Linux server needs Node.js 20+ available; `--install-packages` installs the distro `nodejs`/`npm`, `ffmpeg`, `nginx`, and `rsync` packages when you want the installer to manage that.
 
 Copy it to Linux:
 
@@ -45,7 +39,7 @@ For a domain:
 sudo ./emerald-streaming.run --install-packages --with-nginx --domain recorder.example.com
 ```
 
-This option includes the published app inside the `.run` file.
+This option includes the packaged app inside the `.run` file.
 
 The installer replaces the app files while preserving `/opt/emerald-streaming/Recordings` and runtime HLS preview files. Re-run with `--install-packages` when you want it to install `nginx`, `ffmpeg`, and `rsync` through `apt`.
 
@@ -57,7 +51,10 @@ From the project folder:
 
 ```powershell
 cd "C:\Users\asus tuf a15\Documents\Project\Work\ArcX\Project\Emerald\Emerald.Streaming"
-dotnet publish -c Release -o publish
+npm install --omit=dev
+New-Item -ItemType Directory -Force -Path publish
+Copy-Item server.js,package.json,package-lock.json,index.html,services,wwwroot -Destination publish -Recurse -Force
+Copy-Item node_modules -Destination publish -Recurse -Force
 ```
 
 Copy the published app and installer files to the server:
@@ -107,10 +104,11 @@ http://YOUR_SERVER_IP
 
 If OBS is on another machine, do not use `127.0.0.1` for the stream URL.
 
-Use the Linux server IP or hostname:
+In OBS, use the Emerald server IP or hostname:
 
 ```text
-rtmp://YOUR_SERVER_IP/live/emerald
+Server: rtmp://YOUR_SERVER_IP:1935/live
+Stream Key: emerald
 ```
 
 Recordings are saved on Linux at:

@@ -36,11 +36,11 @@ if (-not (Test-Path $Source)) {
     throw "Source folder was not found: $Source"
 }
 
-$exePath = Join-Path $Source "Emerald.Streaming.exe"
-$dllPath = Join-Path $Source "Emerald.Streaming.dll"
+$serverPath = Join-Path $Source "server.js"
+$packagePath = Join-Path $Source "package.json"
 
-if (-not (Test-Path $exePath) -and -not (Test-Path $dllPath)) {
-    throw "Emerald.Streaming.exe or Emerald.Streaming.dll was not found in '$Source'. Run the package builder first."
+if (-not (Test-Path $serverPath) -or -not (Test-Path $packagePath)) {
+    throw "server.js and package.json were not found in '$Source'. Run the package builder first."
 }
 
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -66,25 +66,38 @@ if (Test-Path $wwwrootDir) {
 Copy-Item -Path (Join-Path $Source "*") -Destination $InstallDir -Recurse -Force
 New-Item -ItemType Directory -Force -Path $recordingsDir, $hlsDir | Out-Null
 
-$installedExe = Join-Path $InstallDir "Emerald.Streaming.exe"
-$installedDll = Join-Path $InstallDir "Emerald.Streaming.dll"
-
-if (Test-Path $installedExe) {
-    $execute = $installedExe
-    $arguments = "--urls `"$Urls`""
+$installedServer = Join-Path $InstallDir "server.js"
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+$node = if ($nodeCommand) { $nodeCommand.Source } else { $null }
+$npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npmCommand) {
+    $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
 }
-else {
-    $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
-    $dotnet = if ($dotnetCommand) { $dotnetCommand.Source } else { $null }
+$npm = if ($npmCommand) { $npmCommand.Source } else { $null }
 
-    if (-not $dotnet) {
-        throw "dotnet was not found and this publish is framework-dependent. Install the ASP.NET Core runtime or rebuild without -FrameworkDependent."
+if (-not $node) {
+    throw "node was not found. Install Node.js 20 or newer before installing Emerald Streaming."
+}
+
+if (-not $npm -and -not (Test-Path (Join-Path $InstallDir "node_modules"))) {
+    throw "npm was not found and node_modules is not included. Install npm or rebuild the package with dependencies."
+}
+
+if ($npm -and -not (Test-Path (Join-Path $InstallDir "node_modules"))) {
+    Push-Location $InstallDir
+    try {
+        & $npm install --omit=dev
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm install failed with exit code $LASTEXITCODE"
+        }
     }
-
-    $execute = $dotnet
-    $arguments = "`"$installedDll`" --urls `"$Urls`""
+    finally {
+        Pop-Location
+    }
 }
 
+$execute = $node
+$arguments = "`"$installedServer`" --urls `"$Urls`""
 $action = New-ScheduledTaskAction -Execute $execute -Argument $arguments -WorkingDirectory $InstallDir
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
