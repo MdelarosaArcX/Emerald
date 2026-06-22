@@ -1,0 +1,124 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "OBS Recorder";
+}
+
+<section class="recorder-shell" aria-label="OBS recorder">
+    <div class="recorder-header">
+        <div>
+            <p class="eyebrow">OBS + DELTACAST</p>
+            <h1>Stream Copy Recording</h1>
+        </div>
+        <div class="status-pill" id="permissionStatus">Recorder idle</div>
+    </div>
+
+    <div class="recorder-grid">
+        <section class="preview-panel" aria-label="OBS browser preview">
+            <div class="video-frame">
+                <video id="previewVideo" autoplay playsinline muted controls></video>
+                <div class="empty-state" id="emptyState">
+                    <strong>No OBS preview yet</strong>
+                    <span>Enter a browser-playable preview URL, then start preview.</span>
+                </div>
+                <div class="recording-badge" id="recordingBadge" hidden>
+                    <span></span>
+                    REC <output id="recordingTimer">00:00</output>
+                </div>
+            </div>
+        </section>
+
+        <aside class="control-panel" aria-label="OBS recording controls">
+            <label class="field">
+                <span>OBS Recording URL</span>
+                <input id="obsInputUrl" type="text" value="rtmp://127.0.0.1/live/emerald" />
+            </label>
+
+            <label class="field">
+                <span>Share Preview URL</span>
+                <input id="obsPreviewUrl" type="text" readonly />
+            </label>
+
+            <button class="secondary-button" id="copyPreviewUrlButton" type="button">Copy Preview URL</button>
+
+            <div class="split-fields">
+                <label class="field">
+                    <span>Container</span>
+                    <select id="recordingContainer">
+                        <option value="mp4">MP4</option>
+                        <option value="mkv">MKV</option>
+                        <option value="ts">MPEG-TS</option>
+                    </select>
+                </label>
+
+                <label class="field">
+                    <span>Segment Seconds</span>
+                    <input id="segmentSeconds" type="number" min="10" max="3600" value="120" />
+                </label>
+            </div>
+
+            <label class="field">
+                <span>FFmpeg Path</span>
+                <input id="ffmpegPath" type="text" value="ffmpeg" />
+            </label>
+
+            <div class="actions">
+                <button class="primary-button" id="startPreviewButton" type="button">Start OBS Preview + Recording</button>
+                <button class="secondary-button" id="stopRecordingButton" type="button" disabled>Stop Recording</button>
+            </div>
+
+            <div class="stats-panel" aria-label="OBS recording statistics">
+                <h2>Recording Stats</h2>
+                <dl>
+                    <div>
+                        <dt>Mode</dt>
+                        <dd id="sourceType">OBS stream copy</dd>
+                    </div>
+                    <div>
+                        <dt>Recording Codec</dt>
+                        <dd id="recordingCodec">Same as OBS input via FFmpeg -c copy</dd>
+                    </div>
+                    <div>
+                        <dt>Current Bitrate</dt>
+                        <dd id="currentBitrate">--</dd>
+                    </div>
+                    <div>
+                        <dt>Current FPS</dt>
+                        <dd id="currentFps">--</dd>
+                    </div>
+                    <div>
+                        <dt>Resolution</dt>
+                        <dd id="currentResolution">--</dd>
+                    </div>
+                    <div>
+                        <dt>Segment Length</dt>
+                        <dd id="segmentLength">120 seconds</dd>
+                    </div>
+                    <div>
+                        <dt>Output Pattern</dt>
+                        <dd id="outputPattern">--</dd>
+                    </div>
+                    <div>
+                        <dt>Last Message</dt>
+                        <dd id="sourceCodec">--</dd>
+                    </div>
+                </dl>
+            </div>
+
+            <div class="segments-panel" aria-label="Saved recording segments">
+                <h2>Saved Segments</h2>
+                <ol id="segmentsList"></ol>
+            </div>
+
+            <p class="hint" id="browserHint">
+                Recording is handled by FFmpeg on the server with stream copy. Preview is generated automatically as HLS and can be opened from another laptop using the share URL.
+            </p>
+        </aside>
+    </div>
+</section>
+
+<noscript>
+    <div class="noscript-warning">
+        JavaScript is required for recorder controls.
+    </div>
+</noscript>

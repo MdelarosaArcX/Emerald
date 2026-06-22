@@ -1,0 +1,28 @@
+Current target architecture:
+
+DELTACAST input
+  -> OBS capture/encode
+  -> Local stream URL
+  -> ASP.NET Core recorder control
+  -> FFmpeg segmented recording with -c copy
+  -> Browser control and optional preview
+
+Important design rule:
+
+The browser must not be the recording encoder when we need to preserve OBS codec, FPS, and bitrate. Browser MediaRecorder re-encodes. The backend recorder uses FFmpeg with stream copy so the saved segments keep the OBS encoded stream.
+
+Recording flow:
+
+1. OBS receives video from DELTACAST.
+2. OBS streams to a local RTMP/SRT/HLS-capable media endpoint.
+3. ASP.NET Core starts FFmpeg against the OBS stream URL.
+4. FFmpeg writes 2-minute files to Emerald.Streaming\Recordings.
+5. The browser polls recorder status and lists saved segments.
+
+Preview flow:
+
+The browser can preview only browser-playable formats. RTMP is not directly playable in normal browser video tags. Use an HLS preview URL, WebRTC preview, or another browser-compatible output if preview is needed.
+
+Production note:
+
+If uninterrupted recording matters, FFmpeg should run as a backend process/service. Browser refreshes should not affect recording. The current OBS recorder follows that approach: once the backend FFmpeg process starts, refreshing the web UI does not stop the recording.

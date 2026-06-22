@@ -1,0 +1,19 @@
+[Unit]
+Description=Emerald Streaming Recorder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=emerald
+Group=emerald
+WorkingDirectory=/opt/emerald-streaming
+EnvironmentFile=/etc/emerald-streaming/emerald.env
+ExecStart=/usr/bin/dotnet /opt/emerald-streaming/Emerald.Streaming.dll
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+SyslogIdentifier=emerald-streaming
+
+[Install]
+WantedBy=multi-user.target
