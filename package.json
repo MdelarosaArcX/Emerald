@@ -1,0 +1,18 @@
+{
+  "name": "emerald",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "backend": "npm --workspace backend run dev",
+    "frontend": "npm --workspace frontend run dev",
+    "build": "npm --workspace frontend run build",
+    "check": "npm --workspace backend run check && npm --workspace frontend run typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

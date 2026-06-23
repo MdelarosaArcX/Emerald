@@ -1,9 +1,10 @@
 **/bin/
 **/obj/
 **/node_modules/
-Emerald.Streaming/Recordings/
-Emerald.Streaming/wwwroot/hls/*
-!Emerald.Streaming/wwwroot/hls/.gitkeep
+backend/Recordings/
+backend/wwwroot/hls/*
+!backend/wwwroot/hls/.gitkeep
+frontend/dist/
 artifacts/
 *.run
 *.zip
