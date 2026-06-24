@@ -33,7 +33,7 @@ const recordingCount = computed(() => recorder.recordings.length);
 
     <label>
       <span>FFmpeg Path</span>
-      <input v-model="recorder.settings.ffmpegPath" />
+      <input v-model="recorder.settings.ffmpegPath" placeholder="ffmpeg or C:\ffmpeg\bin\ffmpeg.exe" />
     </label>
 
     <div class="actions">

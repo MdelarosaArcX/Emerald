@@ -173,7 +173,7 @@ function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
     };
 
     const onError = (error) => {
-      fail(`Unable to start ${label} at '${ffmpegPath}'. ${error.message}`);
+      fail(formatFfmpegStartError(label, ffmpegPath, error));
     };
 
     const onExit = (code, signal) => {
@@ -194,6 +194,14 @@ function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
     process.once("error", onError);
     process.once("exit", onExit);
   });
+}
+
+function formatFfmpegStartError(label, ffmpegPath, error) {
+  if (error?.code === "ENOENT") {
+    return `Unable to start ${label} at '${ffmpegPath}'. FFmpeg was not found. Install FFmpeg and add it to PATH, set FFMPEG_PATH in backend/.env, or paste the full path to ffmpeg.exe in the FFmpeg Path field.`;
+  }
+
+  return `Unable to start ${label} at '${ffmpegPath}'. ${error?.message || "Check the FFmpeg path."}`;
 }
 
 function formatExit(code, signal) {
