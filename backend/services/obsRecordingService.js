@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const staticFfmpegPath = require("ffmpeg-static");
 
 class ObsRecordingService {
   constructor(recordingsPath) {
@@ -137,11 +138,10 @@ function normalizeContainer(container) {
 }
 
 function normalizeFfmpegPath(configuredPath) {
-  if (!configuredPath || !String(configuredPath).trim()) {
-    return "ffmpeg";
-  }
-
-  const trimmedPath = String(configuredPath).trim().replace(/^"|"$/g, "");
+  const rawPath = !configuredPath || !String(configuredPath).trim() || String(configuredPath).trim().toLowerCase() === "ffmpeg"
+    ? process.env.FFMPEG_PATH || staticFfmpegPath || configuredPath || "ffmpeg"
+    : configuredPath;
+  const trimmedPath = String(rawPath).trim().replace(/^"|"$/g, "");
 
   if (fs.existsSync(trimmedPath) && fs.statSync(trimmedPath).isDirectory()) {
     return path.join(trimmedPath, os.platform() === "win32" ? "ffmpeg.exe" : "ffmpeg");
@@ -184,7 +184,7 @@ function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
     };
 
     const onError = (error) => {
-      fail(`Unable to start ${label} at '${ffmpegPath}'. ${error.message}`);
+      fail(formatFfmpegStartError(label, ffmpegPath, error));
     };
 
     const onExit = (code, signal) => {
@@ -205,6 +205,14 @@ function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
     process.once("error", onError);
     process.once("exit", onExit);
   });
+}
+
+function formatFfmpegStartError(label, ffmpegPath, error) {
+  if (error?.code === "ENOENT") {
+    return `Unable to start ${label} at '${ffmpegPath}'. FFmpeg was not found. Install FFmpeg and add it to PATH, set FFMPEG_PATH in backend/.env, or paste the full path to ffmpeg.exe in the FFmpeg Path field.`;
+  }
+
+  return `Unable to start ${label} at '${ffmpegPath}'. ${error?.message || "Check the FFmpeg path."}`;
 }
 
 function formatExit(code, signal) {

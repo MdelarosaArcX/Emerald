@@ -82,9 +82,9 @@ const recordingCount = computed(() => recorder.recordings.length);
       </label>
     </div>
 
-    <label class="source-field">
-      <span>OBS Recording URL</span>
-      <input v-model="recorder.settings.inputUrl" />
+    <label>
+      <span>FFmpeg Path</span>
+      <input v-model="recorder.settings.ffmpegPath" placeholder="ffmpeg or C:\ffmpeg\bin\ffmpeg.exe" />
     </label>
 
     <div class="actions">

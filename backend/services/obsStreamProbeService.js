@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const staticFfprobe = require("ffprobe-static");
 
 async function probeObsStream(request) {
   if (!request.inputUrl || !String(request.inputUrl).trim()) {
@@ -80,8 +81,8 @@ function parseResult(json) {
 }
 
 function normalizeFfprobePath(configuredPath) {
-  if (!configuredPath || !String(configuredPath).trim()) {
-    return "ffprobe";
+  if (!configuredPath || !String(configuredPath).trim() || String(configuredPath).trim().toLowerCase() === "ffmpeg") {
+    return process.env.FFPROBE_PATH || staticFfprobe.path || "ffprobe";
   }
 
   const trimmedPath = String(configuredPath).trim().replace(/^"|"$/g, "");
