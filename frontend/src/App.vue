@@ -30,18 +30,32 @@ onUnmounted(() => {
 <template>
   <main class="app-shell">
     <header class="topbar">
-      <div>
-        <p>Emerald Streaming</p>
-        <h1>Recorder Console</h1>
+      <a class="brand" href="/">Emerald IP</a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a class="active" href="/">Monitoring</a>
+        <a href="/">Broadcast</a>
+        <a href="/">History</a>
+        <a href="/">Settings</a>
+      </nav>
+      <div class="top-actions" aria-label="Status">
+        <span class="signal-icon" aria-hidden="true"></span>
+        <span class="user-icon" aria-hidden="true"></span>
+        <span class="status-pill" :class="{ live: recorder.isRecording }">{{ statusLabel }}</span>
       </div>
-      <span class="status-pill" :class="{ live: recorder.isRecording }">{{ statusLabel }}</span>
     </header>
 
     <section class="workspace-grid">
-      <PreviewPlayer :src="recorder.activePreviewUrl" />
-      <RecorderPanel />
-    </section>
+      <section class="deck media-deck" aria-label="Media browser">
+        <span class="deck-tab">Media Browser</span>
+        <PreviewPlayer :src="recorder.activePreviewUrl" variant="library" />
+        <CanvasWorkspace />
+      </section>
 
-    <CanvasWorkspace />
+      <section class="deck capture-deck" aria-label="Capture deck">
+        <span class="deck-tab">Capture Deck</span>
+        <PreviewPlayer :src="recorder.activePreviewUrl" variant="capture" />
+        <RecorderPanel />
+      </section>
+    </section>
   </main>
 </template>
