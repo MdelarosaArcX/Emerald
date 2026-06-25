@@ -35,15 +35,33 @@ export type RecordingSegment = {
 
 type RecorderSettings = {
   inputUrl: string;
+  outputPath: string;
+  title: string;
+  description: string;
+  fps: string;
   container: string;
   segmentSeconds: number;
+  videoCodec: string;
+  audioCodec: string;
+  videoBitrate: string;
+  audioBitrate: string;
+  audioSampleFrequency: string;
   ffmpegPath: string;
 };
 
 const defaultSettings: RecorderSettings = {
   inputUrl: "rtmp://127.0.0.1:1935/live/emerald",
+  outputPath: "recordings/obs",
+  title: "OBS live preview",
+  description: "Stream copy recording from OBS.",
+  fps: "25",
   container: "mp4",
   segmentSeconds: 120,
+  videoCodec: "H.264",
+  audioCodec: "AAC",
+  videoBitrate: "5000 kbps",
+  audioBitrate: "320 kbps",
+  audioSampleFrequency: "48 kHz",
   ffmpegPath: "ffmpeg",
 };
 

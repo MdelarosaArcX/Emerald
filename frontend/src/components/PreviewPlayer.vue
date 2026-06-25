@@ -10,6 +10,11 @@ const props = defineProps<{
   description?: string;
   detail?: string;
   sourceUrl?: string;
+  outputPath?: string;
+  videoBitrateLabel?: string;
+  audioBitrateLabel?: string;
+  sampleFrequencyLabel?: string;
+  ffmpegPath?: string;
   isRecording?: boolean;
   timecode?: string;
   transportLabel?: string;
@@ -143,7 +148,7 @@ function onVideoError() {
 
     <dl v-if="isCapture" class="capture-meta">
       <div>
-        <dt>Source URL/path</dt>
+        <dt>Source URL</dt>
         <dd>{{ sourceUrl || "--" }}</dd>
       </div>
       <div>
@@ -155,12 +160,36 @@ function onVideoError() {
         <dd>{{ description || "The right video frame shows the stream currently being published from OBS." }}</dd>
       </div>
       <div>
-        <dt>Duration | FPS</dt>
-        <dd>{{ detail || "--" }}</dd>
+        <dt>Output path</dt>
+        <dd>{{ outputPath || "--" }}</dd>
+      </div>
+      <div>
+        <dt>Duration</dt>
+        <dd>{{ durationLabel || detail || "--" }}</dd>
+      </div>
+      <div>
+        <dt>FPS</dt>
+        <dd>{{ fpsLabel || "--" }}</dd>
       </div>
       <div>
         <dt>Format</dt>
         <dd>{{ formatLabel || "MP4 | H.264 | AAC" }}</dd>
+      </div>
+      <div>
+        <dt>Video Bitrate</dt>
+        <dd>{{ videoBitrateLabel || "--" }}</dd>
+      </div>
+      <div>
+        <dt>Audio Bitrate</dt>
+        <dd>{{ audioBitrateLabel || "--" }}</dd>
+      </div>
+      <div>
+        <dt>Sample Frequency</dt>
+        <dd>{{ sampleFrequencyLabel || "--" }}</dd>
+      </div>
+      <div>
+        <dt>FFmpeg Path</dt>
+        <dd>{{ ffmpegPath || "--" }}</dd>
       </div>
     </dl>
   </section>

@@ -39,22 +39,23 @@ const captureTransportLabel = computed(() => {
   if (selectedRecording.value) return selectedRecording.value.fileName;
   return "OBS Preview";
 });
-const captureTitle = computed(() => selectedRecording.value?.fileName || "OBS live preview");
-const captureDescription = computed(() => {
-  const recording = selectedRecording.value;
-  if (!recording) return "The right video frame shows the stream currently being published from OBS.";
-  return `Recorded segment saved ${formatDate(recording.createdAt)}`;
-});
+const captureTitle = computed(() => recorder.settings.title || "OBS live preview");
+const captureDescription = computed(() => recorder.settings.description || "The right video frame shows the stream currently being published from OBS.");
 const captureDetail = computed(() => {
   const status = recorder.recorderStatus;
   const segmentSeconds = status?.segmentSeconds || recorder.settings.segmentSeconds;
-  const fps = status?.isRecording ? "25 DVB-T" : "25 DVB-T";
-  return `${formatTimecode(segmentSeconds)} | ${fps}`;
+  return formatTimecode(segmentSeconds);
 });
 const captureFormat = computed(() => {
   const container = recorder.recorderStatus?.container?.toUpperCase() || recorder.settings.container.toUpperCase();
-  return `${container} | H.264 | AAC`;
+  return `${container} | ${recorder.settings.videoCodec} | ${recorder.settings.audioCodec}`;
 });
+const captureFps = computed(() => `${recorder.settings.fps} FPS`);
+const captureVideoBitrate = computed(() => recorder.settings.videoBitrate);
+const captureAudioBitrate = computed(() => recorder.settings.audioBitrate);
+const captureSampleFrequency = computed(() => recorder.settings.audioSampleFrequency);
+const captureOutputPath = computed(() => recorder.settings.outputPath);
+const captureFfmpegPath = computed(() => recorder.settings.ffmpegPath);
 
 onMounted(async () => {
   recorder.loadSettings();
@@ -163,10 +164,17 @@ function pad(value: number) {
           :title="captureTitle"
           :description="captureDescription"
           :source-url="recorder.settings.inputUrl"
+          :output-path="captureOutputPath"
           :detail="captureDetail"
+          :duration-label="captureDetail"
+          :fps-label="captureFps"
           :timecode="captureTimecode"
           :transport-label="captureTransportLabel"
           :format-label="captureFormat"
+          :video-bitrate-label="captureVideoBitrate"
+          :audio-bitrate-label="captureAudioBitrate"
+          :sample-frequency-label="captureSampleFrequency"
+          :ffmpeg-path="captureFfmpegPath"
           :is-recording="recorder.isRecording"
           :is-busy="recorder.isBusy"
           @start="startCapture"

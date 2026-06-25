@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import { useRecorderStore } from "../stores/recorder";
 
 const recorder = useRecorderStore();
@@ -12,6 +12,12 @@ const durationTimecode = computed({
     recorder.settings.segmentSeconds = parseTimecode(value);
   },
 });
+
+watch(
+  () => recorder.settings,
+  () => recorder.saveSettings(),
+  { deep: true }
+);
 
 function formatTimecode(totalSeconds: number) {
   const seconds = Math.max(0, Number(totalSeconds) || 0);
@@ -41,17 +47,17 @@ function pad(value: number) {
     <div class="config-grid">
       <label class="field-row field-wide">
         <span>Output path</span>
-        <input class="value-input" placeholder="Click to browse output path" />
+        <input v-model="recorder.settings.outputPath" class="value-input" placeholder="Click to browse output path" />
       </label>
 
       <label class="field-row field-wide">
         <span>Title</span>
-        <input class="value-input" placeholder="Click to add title" />
+        <input v-model="recorder.settings.title" class="value-input" placeholder="Click to add title" />
       </label>
 
       <label class="field-row field-wide">
         <span>Description</span>
-        <input class="value-input" placeholder="Click to add description" />
+        <input v-model="recorder.settings.description" class="value-input" placeholder="Click to add description" />
       </label>
 
       <label class="field-row">
@@ -61,10 +67,10 @@ function pad(value: number) {
 
       <label class="field-row">
         <span>FPS</span>
-        <select class="compact-select">
-          <option>25 DVB-T</option>
-          <option>30 DVB-T</option>
-          <option>60 DVB-T</option>
+        <select v-model="recorder.settings.fps" class="compact-select">
+          <option value="25">25 DVB-T</option>
+          <option value="30">30 DVB-T</option>
+          <option value="60">60 DVB-T</option>
         </select>
       </label>
 
@@ -76,48 +82,48 @@ function pad(value: number) {
             <option value="mkv">Auto detect - MKV</option>
             <option value="ts">Auto detect - MPEG-TS</option>
           </select>
-          <select class="compact-select auto-select">
-            <option>Auto detect - H.264</option>
-            <option>Auto detect - H.265</option>
+          <select v-model="recorder.settings.videoCodec" class="compact-select auto-select">
+            <option value="H.264">Auto detect - H.264</option>
+            <option value="H.265">Auto detect - H.265</option>
           </select>
-          <select class="compact-select auto-select">
-            <option>Auto detect - AAC</option>
-            <option>Auto detect - Opus</option>
+          <select v-model="recorder.settings.audioCodec" class="compact-select auto-select">
+            <option value="AAC">Auto detect - AAC</option>
+            <option value="Opus">Auto detect - Opus</option>
           </select>
         </span>
       </label>
 
       <label class="field-row">
         <span>Video Bitrate</span>
-        <select class="compact-select auto-select">
-          <option>Auto detect - 3000 kbps</option>
-          <option>Auto detect - 5000 kbps</option>
-          <option>Auto detect - 8000 kbps</option>
+        <select v-model="recorder.settings.videoBitrate" class="compact-select auto-select">
+          <option value="3000 kbps">Auto detect - 3000 kbps</option>
+          <option value="5000 kbps">Auto detect - 5000 kbps</option>
+          <option value="8000 kbps">Auto detect - 8000 kbps</option>
         </select>
       </label>
 
       <label class="field-row">
         <span>Audio Bitrate</span>
-        <select class="compact-select auto-select">
-          <option>Auto detect - 320 kbps</option>
-          <option>Auto detect - 256 kbps</option>
-          <option>Auto detect - 128 kbps</option>
+        <select v-model="recorder.settings.audioBitrate" class="compact-select auto-select">
+          <option value="320 kbps">Auto detect - 320 kbps</option>
+          <option value="256 kbps">Auto detect - 256 kbps</option>
+          <option value="128 kbps">Auto detect - 128 kbps</option>
         </select>
       </label>
 
       <label class="field-row">
         <span>Audio Sample Frequency</span>
-        <select class="compact-select auto-select">
-          <option>Auto detect - 96 kHz</option>
-          <option>Auto detect - 48 kHz</option>
-          <option>Auto detect - 44.1 kHz</option>
+        <select v-model="recorder.settings.audioSampleFrequency" class="compact-select auto-select">
+          <option value="96 kHz">Auto detect - 96 kHz</option>
+          <option value="48 kHz">Auto detect - 48 kHz</option>
+          <option value="44.1 kHz">Auto detect - 44.1 kHz</option>
         </select>
       </label>
     </div>
 
     <div class="recorder-advanced">
       <label class="field-row source-field">
-        <span>OBS Stream URL</span>
+        <span>Source URL</span>
         <input v-model="recorder.settings.inputUrl" placeholder="rtmp://127.0.0.1:1935/live/emerald" />
       </label>
 
