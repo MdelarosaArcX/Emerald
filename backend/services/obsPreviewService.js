@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeFfmpegPath } = require("./obsRecordingService");
-const { normalizeInputUrl } = require("./ffmpegInputUrl");
+const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
 
 const previewPath = "/hls/obs-preview/index.m3u8";
 
@@ -38,6 +38,7 @@ class ObsPreviewService {
     const args = [
       "-hide_banner",
       "-loglevel", "warning",
+      ...buildUdpInputArgs(inputUrl),
       "-i", inputUrl,
       "-map", "0:v:0",
       "-map", "0:a?",
@@ -257,5 +258,24 @@ function explainFfmpegMessage(message, inputUrl) {
     return `${message} Check that OBS is streaming to rtmp://127.0.0.1:1935/live with stream key emerald, then start recording again.`;
   }
 
+  if (message && /non-existing PPS|decode_slice_header error|no frame!/i.test(message)) {
+    if (String(inputUrl || "").trim().toLowerCase().startsWith("udp://")) {
+      return `${message} The UDP sender is likely not repeating H.264 SPS/PPS often enough. In your C# Deltacast encoder, make sure SPS/PPS are inserted at the start of the stream and repeated on each keyframe.`;
+    }
+  }
+
   return message;
+}
+
+function buildUdpInputArgs(inputUrl) {
+  if (!isUdpInputUrl(inputUrl)) {
+    return [];
+  }
+
+  return [
+    "-fflags", "+discardcorrupt",
+    "-probesize", "50M",
+    "-analyzeduration", "50M",
+    "-max_delay", "500000",
+  ];
 }

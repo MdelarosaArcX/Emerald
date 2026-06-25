@@ -17,6 +17,11 @@ function normalizeInputUrl(inputUrl) {
   }
 }
 
+function isUdpInputUrl(inputUrl) {
+  return String(inputUrl || "").trim().toLowerCase().startsWith("udp://");
+}
+
 module.exports = {
   normalizeInputUrl,
+  isUdpInputUrl,
 };
