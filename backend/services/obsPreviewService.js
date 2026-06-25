@@ -50,7 +50,6 @@ class ObsPreviewService {
       "-keyint_min", "60",
       "-sc_threshold", "0",
       "-c:a", "aac",
-      "-b:a", "128k",
       "-f", "hls",
       "-hls_time", "2",
       "-hls_list_size", "10",
