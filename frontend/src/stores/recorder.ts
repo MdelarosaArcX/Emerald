@@ -50,10 +50,10 @@ type RecorderSettings = {
 };
 
 const defaultSettings: RecorderSettings = {
-  inputUrl: "rtmp://127.0.0.1:1935/live/emerald",
+  inputUrl: "udp://0.0.0.0:5000",
   outputPath: "recordings/obs",
-  title: "OBS live preview",
-  description: "Stream copy recording from OBS.",
+  title: "Deltacast live preview",
+  description: "UDP input recording from the Deltacast bridge.",
   fps: "25",
   container: "mp4",
   segmentSeconds: 120,
@@ -92,6 +92,9 @@ export const useRecorderStore = defineStore("recorder", {
 
       try {
         this.settings = { ...defaultSettings, ...JSON.parse(saved) };
+        if (this.settings.inputUrl === "udp://127.0.0.1:5000") {
+          this.settings.inputUrl = defaultSettings.inputUrl;
+        }
       } catch {
         localStorage.removeItem("emerald.streaming.settings");
       }

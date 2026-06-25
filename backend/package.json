@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check server.js && node --check services/obsRecordingService.js && node --check services/obsPreviewService.js && node --check services/rtmpIngestService.js && node --check services/runtimeServices.js"
+    "check": "node --check server.js && node --check services/obsRecordingService.js && node --check services/obsPreviewService.js && node --check services/rtmpIngestService.js && node --check services/runtimeServices.js && node --check services/ffmpegInputUrl.js"
   },
   "engines": {
     "node": ">=20"

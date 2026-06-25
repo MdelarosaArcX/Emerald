@@ -3,6 +3,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const staticFfmpegPath = require("ffmpeg-static");
+const { normalizeInputUrl } = require("./ffmpegInputUrl");
 
 class ObsRecordingService {
   constructor(recordingsPath) {
@@ -31,11 +32,12 @@ class ObsRecordingService {
     const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
     const container = normalizeContainer(request.container);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
+    const inputUrl = normalizeInputUrl(request.inputUrl);
     const outputPattern = path.join(this.recordingsPath, `obs-%Y%m%d-%H%M%S.${container.extension}`);
     const args = [
       "-hide_banner",
       "-loglevel", "warning",
-      "-i", String(request.inputUrl).trim(),
+      "-i", inputUrl,
       "-map", "0",
       "-c", "copy",
       "-f", "segment",
@@ -74,21 +76,21 @@ class ObsRecordingService {
     });
 
     startedProcess.on("exit", () => {
-      this.status = { ...this.status, isRecording: false, lastMessage: explainFfmpegMessage(this.status.lastMessage || "FFmpeg stopped.") };
+      this.status = { ...this.status, isRecording: false, lastMessage: explainFfmpegMessage(this.status.lastMessage || "FFmpeg stopped.", this.status.inputUrl) };
       this.process = null;
     });
 
     this.status = {
       isRecording: true,
       startedAt: new Date().toISOString(),
-      inputUrl: String(request.inputUrl).trim(),
+      inputUrl,
       outputPattern,
       segmentSeconds,
       container: container.extension,
       lastMessage: null,
     };
 
-    await waitForFfmpegStartup(startedProcess, ffmpegPath, "FFmpeg", () => this.status.lastMessage);
+    await waitForFfmpegStartup(startedProcess, ffmpegPath, "FFmpeg", () => this.status.lastMessage, inputUrl);
     return this.status;
   }
 
@@ -163,7 +165,7 @@ module.exports = {
   normalizeFfmpegPath,
 };
 
-function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
+function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage, inputUrl) {
   return new Promise((resolve, reject) => {
     let settled = false;
 
@@ -188,7 +190,7 @@ function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
     };
 
     const onExit = (code, signal) => {
-      const detail = explainFfmpegMessage(getLastMessage?.());
+      const detail = explainFfmpegMessage(getLastMessage?.(), inputUrl);
       fail(`${label} stopped before recording could start${formatExit(code, signal)}.${detail ? ` ${detail}` : " Check the FFmpeg path and OBS stream URL."}`);
     };
 
@@ -230,8 +232,12 @@ function formatExit(code, signal) {
   return parts.length ? ` (${parts.join(", ")})` : "";
 }
 
-function explainFfmpegMessage(message) {
+function explainFfmpegMessage(message, inputUrl) {
   if (message && message.toLowerCase().includes("error opening input")) {
+    if (String(inputUrl || "").trim().toLowerCase().startsWith("udp://")) {
+      return `${message} For a local UDP ingest from Deltacast, use udp://0.0.0.0:5000 or udp://@:5000 so FFmpeg listens on the port. Do not use udp://127.0.0.1:5000 unless another process is sending unicast UDP to that exact address.`;
+    }
+
     return `${message} Check that OBS is streaming to rtmp://127.0.0.1:1935/live with stream key emerald, then start recording again.`;
   }
 

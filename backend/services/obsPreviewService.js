@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeFfmpegPath } = require("./obsRecordingService");
+const { normalizeInputUrl } = require("./ffmpegInputUrl");
 
 const previewPath = "/hls/obs-preview/index.m3u8";
 
@@ -30,13 +31,14 @@ class ObsPreviewService {
     this.cleanPreviewFiles();
 
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
+    const inputUrl = normalizeInputUrl(request.inputUrl);
     const playlistPath = path.join(this.previewRoot, "index.m3u8");
     const sessionId = String(Date.now());
     const segmentPattern = path.join(this.previewRoot, `segment-${sessionId}-%05d.ts`);
     const args = [
       "-hide_banner",
       "-loglevel", "warning",
-      "-i", String(request.inputUrl).trim(),
+      "-i", inputUrl,
       "-map", "0:v:0",
       "-map", "0:a?",
       "-c:v", "libx264",
@@ -86,7 +88,7 @@ class ObsPreviewService {
     });
 
     startedProcess.on("exit", () => {
-      this.status = { ...this.status, isRunning: false, lastMessage: explainFfmpegMessage(this.status.lastMessage || "Preview FFmpeg stopped.") };
+      this.status = { ...this.status, isRunning: false, lastMessage: explainFfmpegMessage(this.status.lastMessage || "Preview FFmpeg stopped.", inputUrl) };
       this.process = null;
     });
 
@@ -97,10 +99,10 @@ class ObsPreviewService {
       lastMessage: null,
     };
 
-    await waitForFfmpegStartup(startedProcess, ffmpegPath, "Preview FFmpeg", () => this.status.lastMessage);
+    await waitForFfmpegStartup(startedProcess, ffmpegPath, "Preview FFmpeg", () => this.status.lastMessage, inputUrl);
 
     try {
-      await waitForPlaylistFile(startedProcess, playlistPath, () => this.status.lastMessage);
+      await waitForPlaylistFile(startedProcess, playlistPath, () => this.status.lastMessage, inputUrl);
     } catch (error) {
       this.stop();
       this.status = { ...this.status, isRunning: false, lastMessage: error.message };
@@ -152,7 +154,7 @@ module.exports = {
   ObsPreviewService,
 };
 
-function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
+function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage, inputUrl) {
   return new Promise((resolve, reject) => {
     let settled = false;
 
@@ -177,7 +179,7 @@ function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage) {
     };
 
     const onExit = (code, signal) => {
-      const detail = explainFfmpegMessage(getLastMessage?.());
+      const detail = explainFfmpegMessage(getLastMessage?.(), inputUrl);
       fail(`${label} stopped before preview could start${formatExit(code, signal)}.${detail ? ` ${detail}` : " Check the FFmpeg path and OBS stream URL."}`);
     };
 
@@ -219,7 +221,7 @@ function formatExit(code, signal) {
   return parts.length ? ` (${parts.join(", ")})` : "";
 }
 
-function waitForPlaylistFile(process, playlistPath, getLastMessage) {
+function waitForPlaylistFile(process, playlistPath, getLastMessage, inputUrl) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const timeoutMs = 12000;
@@ -231,12 +233,12 @@ function waitForPlaylistFile(process, playlistPath, getLastMessage) {
       }
 
       if (process.exitCode !== null || process.signalCode !== null || process.killed) {
-        reject(new Error(explainFfmpegMessage(getLastMessage() || "Preview FFmpeg stopped before creating the HLS playlist.")));
+        reject(new Error(explainFfmpegMessage(getLastMessage() || "Preview FFmpeg stopped before creating the HLS playlist.", inputUrl)));
         return;
       }
 
       if (Date.now() - startedAt >= timeoutMs) {
-        reject(new Error(explainFfmpegMessage(getLastMessage() || "Preview HLS playlist was not created. Check that OBS is actively streaming to the configured recording URL.")));
+        reject(new Error(explainFfmpegMessage(getLastMessage() || "Preview HLS playlist was not created. Check that the configured input stream is sending video.", inputUrl)));
         return;
       }
 
@@ -247,8 +249,12 @@ function waitForPlaylistFile(process, playlistPath, getLastMessage) {
   });
 }
 
-function explainFfmpegMessage(message) {
+function explainFfmpegMessage(message, inputUrl) {
   if (message && message.toLowerCase().includes("error opening input")) {
+    if (String(inputUrl || "").trim().toLowerCase().startsWith("udp://")) {
+      return `${message} For a local UDP ingest from Deltacast, use udp://0.0.0.0:5000 or udp://@:5000 so FFmpeg listens on the port. Do not use udp://127.0.0.1:5000 unless another process is sending unicast UDP to that exact address.`;
+    }
+
     return `${message} Check that OBS is streaming to rtmp://127.0.0.1:1935/live with stream key emerald, then start recording again.`;
   }
 

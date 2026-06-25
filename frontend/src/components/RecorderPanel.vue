@@ -124,7 +124,7 @@ function pad(value: number) {
     <div class="recorder-advanced">
       <label class="field-row source-field">
         <span>Source URL</span>
-        <input v-model="recorder.settings.inputUrl" placeholder="rtmp://127.0.0.1:1935/live/emerald" />
+        <input v-model="recorder.settings.inputUrl" placeholder="udp://0.0.0.0:5000" />
       </label>
 
       <label class="field-row">
