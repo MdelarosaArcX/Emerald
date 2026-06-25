@@ -532,10 +532,12 @@ dd {
   border-top-width: 7px;
   border-bottom-width: 7px;
   border-left-width: 12px;
- 
   
 }
-
+button.pause.active.play::before {
+ width: 4px!important;
+  height: 1px!important;
+}
 .capture .stop::before {
   width: 11px;
   height: 11px;
