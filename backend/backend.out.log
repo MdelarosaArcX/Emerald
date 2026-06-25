@@ -1,0 +1,9 @@
+
+> emerald-streaming@1.0.0 dev
+> node server.js
+
+[6/24/2026, 2:17:55 PM] [INFO] Node-Media-Server v4.2.8
+[6/24/2026, 2:17:55 PM] [INFO] Homepage: https://github.com/illuspas/Node-Media-Server
+[6/24/2026, 2:17:55 PM] [INFO] License: Apache-2.0
+[6/24/2026, 2:17:55 PM] [INFO] Author: Chen Mingliang
+Emerald Streaming backend listening on http://127.0.0.1:5001

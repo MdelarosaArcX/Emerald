@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 require("dotenv").config();
 
 const fastify = require("fastify");
@@ -9,6 +10,7 @@ const multipart = require("@fastify/multipart");
 const fastifyStatic = require("@fastify/static");
 
 const { ObsRecordingService } = require("./services/obsRecordingService");
+const { normalizeFfmpegPath } = require("./services/obsRecordingService");
 const { ObsPreviewService } = require("./services/obsPreviewService");
 const { RtmpIngestService } = require("./services/rtmpIngestService");
 const { probeObsStream } = require("./services/obsStreamProbeService");
@@ -17,8 +19,10 @@ const { runtimeServices } = require("./services/runtimeServices");
 const contentRoot = __dirname;
 const webRoot = path.join(contentRoot, "wwwroot");
 const recordingsPath = path.join(contentRoot, "Recordings");
+const thumbnailsPath = path.join(recordingsPath, ".thumbnails");
 
 fs.mkdirSync(recordingsPath, { recursive: true });
+fs.mkdirSync(thumbnailsPath, { recursive: true });
 
 const app = fastify({
   logger: process.env.EMERALD_LOG_LEVEL
@@ -139,6 +143,7 @@ function registerRoutes(server) {
       return {
         fileName,
         url: `/recordings/${fileName}`,
+        thumbnailUrl: `/api/obs-recordings/${encodeURIComponent(fileName)}/thumbnail`,
         size: stat.size,
         createdAt: stat.birthtime.toISOString(),
         lastWriteTime: stat.mtimeMs,
@@ -146,10 +151,30 @@ function registerRoutes(server) {
     }));
 
     return recordings
-      .filter((file) => file.size >= 0)
+      .filter((file) => file.size >= 0 && !file.fileName.startsWith("."))
       .sort((a, b) => b.lastWriteTime - a.lastWriteTime)
       .slice(0, 100)
       .map(({ lastWriteTime, ...file }) => file);
+  });
+
+  server.get("/api/obs-recordings/:fileName/thumbnail", async (request, reply) => {
+    const fileName = path.basename(request.params.fileName || "");
+    const recordingPath = path.join(recordingsPath, fileName);
+
+    if (!fileName || !isInsideDirectory(recordingsPath, recordingPath) || !fs.existsSync(recordingPath)) {
+      return reply.code(404).send({ message: "Recording was not found." });
+    }
+
+    const thumbnailPath = path.join(thumbnailsPath, `${Buffer.from(fileName).toString("base64url")}.jpg`);
+
+    if (!fs.existsSync(thumbnailPath)) {
+      await createRecordingThumbnail(recordingPath, thumbnailPath, process.env.FFMPEG_PATH);
+    }
+
+    return reply
+      .type("image/jpeg")
+      .header("Cache-Control", "public, max-age=86400")
+      .send(fs.createReadStream(thumbnailPath));
   });
 
   server.post("/api/obs-recording/start", async (request, reply) => {
@@ -222,4 +247,64 @@ function formatUtcTimestamp(date) {
   return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}`
     + `-${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`
     + `-${pad(date.getUTCMilliseconds(), 3)}`;
+}
+
+function isInsideDirectory(rootDirectory, targetPath) {
+  const relative = path.relative(rootDirectory, targetPath);
+  return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function createRecordingThumbnail(inputPath, outputPath, configuredFfmpegPath) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const ffmpegPath = normalizeFfmpegPath(configuredFfmpegPath);
+    const args = [
+      "-hide_banner",
+      "-loglevel", "error",
+      "-y",
+      "-ss", "00:00:01",
+      "-i", inputPath,
+      "-frames:v", "1",
+      "-vf", "scale=320:-1:force_original_aspect_ratio=decrease",
+      outputPath,
+    ];
+    const ffmpeg = spawn(ffmpegPath, args, {
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let lastMessage = "";
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      fs.rm(outputPath, { force: true }, () => {});
+      reject(error);
+    };
+    const timeout = setTimeout(() => {
+      if (!ffmpeg.killed) {
+        ffmpeg.kill("SIGKILL");
+      }
+      fail(new Error("Thumbnail generation timed out."));
+    }, 8000);
+
+    ffmpeg.stderr.on("data", (chunk) => {
+      lastMessage = chunk.toString().trim() || lastMessage;
+    });
+
+    ffmpeg.on("error", (error) => {
+      fail(error);
+    });
+
+    ffmpeg.on("exit", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (code === 0 && fs.existsSync(outputPath)) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(lastMessage || "Unable to create recording thumbnail."));
+    });
+  });
 }

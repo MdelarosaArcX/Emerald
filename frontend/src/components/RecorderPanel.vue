@@ -6,6 +6,29 @@ const recorder = useRecorderStore();
 
 const activeStreams = computed(() => recorder.ingestStatus?.activeStreams.join(", ") || "None");
 const recordingCount = computed(() => recorder.recordings.length);
+const durationTimecode = computed({
+  get: () => formatTimecode(recorder.settings.segmentSeconds),
+  set: (value: string) => {
+    recorder.settings.segmentSeconds = parseTimecode(value);
+  },
+});
+
+function formatTimecode(totalSeconds: number) {
+  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return `${pad(hours)}:${pad(minutes)}:${pad(remainder)}:00`;
+}
+
+function parseTimecode(value: string) {
+  const [hours = "0", minutes = "0", seconds = "0"] = value.split(":");
+  return (Number(hours) || 0) * 3600 + (Number(minutes) || 0) * 60 + (Number(seconds) || 0);
+}
+
+function pad(value: number) {
+  return String(Math.trunc(value)).padStart(2, "0");
+}
 </script>
 
 <template>
@@ -16,87 +39,95 @@ const recordingCount = computed(() => recorder.recordings.length);
     </header>
 
     <div class="config-grid">
-      <label class="wide">
+      <label class="field-row field-wide">
         <span>Output path</span>
-        <input value="/home/Admin/Videos/political_war/" readonly />
+        <input class="value-input" placeholder="Click to browse output path" />
       </label>
 
-      <label class="wide">
+      <label class="field-row field-wide">
         <span>Title</span>
-        <input value="russian_responder" />
+        <input class="value-input" placeholder="Click to add title" />
       </label>
 
-      <label class="wide">
+      <label class="field-row field-wide">
         <span>Description</span>
-        <textarea rows="2">Quick responder after tragic drone attack, giving immediate aide to the casualties.</textarea>
+        <input class="value-input" placeholder="Click to add description" />
       </label>
 
-      <label>
+      <label class="field-row">
         <span>Set Duration</span>
-        <input v-model.number="recorder.settings.segmentSeconds" type="number" min="10" max="3600" />
+        <input v-model="durationTimecode" class="compact-input" inputmode="numeric" />
       </label>
 
-      <label>
+      <label class="field-row">
         <span>FPS</span>
-        <select>
+        <select class="compact-select">
           <option>25 DVB-T</option>
           <option>30 DVB-T</option>
           <option>60 DVB-T</option>
         </select>
       </label>
 
-      <label>
+      <label class="field-row field-wide">
         <span>Format</span>
-        <select v-model="recorder.settings.container">
-          <option value="mp4">MP4</option>
-          <option value="mkv">MKV</option>
-          <option value="ts">MPEG-TS</option>
-        </select>
+        <span class="format-controls">
+          <select v-model="recorder.settings.container" class="compact-select auto-select">
+            <option value="mp4">Auto detect - MP4</option>
+            <option value="mkv">Auto detect - MKV</option>
+            <option value="ts">Auto detect - MPEG-TS</option>
+          </select>
+          <select class="compact-select auto-select">
+            <option>Auto detect - H.264</option>
+            <option>Auto detect - H.265</option>
+          </select>
+          <select class="compact-select auto-select">
+            <option>Auto detect - AAC</option>
+            <option>Auto detect - Opus</option>
+          </select>
+        </span>
       </label>
 
-      <label>
+      <label class="field-row">
         <span>Video Bitrate</span>
-        <select>
-          <option>3000 kbps</option>
-          <option>5000 kbps</option>
-          <option>8000 kbps</option>
+        <select class="compact-select auto-select">
+          <option>Auto detect - 3000 kbps</option>
+          <option>Auto detect - 5000 kbps</option>
+          <option>Auto detect - 8000 kbps</option>
         </select>
       </label>
 
-      <label>
+      <label class="field-row">
         <span>Audio Bitrate</span>
-        <select>
-          <option>320 kbps</option>
-          <option>256 kbps</option>
-          <option>128 kbps</option>
+        <select class="compact-select auto-select">
+          <option>Auto detect - 320 kbps</option>
+          <option>Auto detect - 256 kbps</option>
+          <option>Auto detect - 128 kbps</option>
         </select>
       </label>
 
-      <label>
+      <label class="field-row">
         <span>Audio Sample Frequency</span>
-        <select>
-          <option>96 kHz</option>
-          <option>48 kHz</option>
-          <option>44.1 kHz</option>
+        <select class="compact-select auto-select">
+          <option>Auto detect - 96 kHz</option>
+          <option>Auto detect - 48 kHz</option>
+          <option>Auto detect - 44.1 kHz</option>
         </select>
       </label>
     </div>
 
-    <label>
-      <span>FFmpeg Path</span>
-      <input v-model="recorder.settings.ffmpegPath" placeholder="ffmpeg or C:\ffmpeg\bin\ffmpeg.exe" />
-    </label>
+    <div class="recorder-advanced">
+      <label class="field-row source-field">
+        <span>OBS Stream URL</span>
+        <input v-model="recorder.settings.inputUrl" placeholder="rtmp://127.0.0.1:1935/live/emerald" />
+      </label>
 
-    <div class="actions">
-      <button type="button" :disabled="recorder.isBusy || recorder.isRecording" @click="recorder.start">
-        Start
-      </button>
-      <button type="button" class="secondary" :disabled="recorder.isBusy || !recorder.isRecording" @click="recorder.stop">
-        Stop
-      </button>
+      <label class="field-row">
+        <span>FFmpeg Path</span>
+        <input v-model="recorder.settings.ffmpegPath" placeholder="ffmpeg or C:\ffmpeg\bin\ffmpeg.exe" />
+      </label>
     </div>
 
-    <dl class="stats">
+    <dl class="stats recorder-advanced">
       <div>
         <dt>RTMP Ingest</dt>
         <dd>{{ recorder.ingestStatus?.lastMessage || "--" }}</dd>
@@ -119,7 +150,7 @@ const recordingCount = computed(() => recorder.recordings.length);
       </div>
     </dl>
 
-    <ol class="segments">
+    <ol class="segments recorder-advanced">
       <li v-for="recording in recorder.recordings" :key="recording.fileName">
         <a :href="recording.url" target="_blank" rel="noreferrer">{{ recording.fileName }}</a>
         <span>{{ Math.round(recording.size / 1024) }} KB</span>

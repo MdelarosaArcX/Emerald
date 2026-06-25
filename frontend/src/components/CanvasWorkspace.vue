@@ -1,13 +1,31 @@
 <script setup lang="ts">
 import mediaStill from "../assets/reference-media.png";
+import type { RecordingSegment } from "../stores/recorder";
 
-const clips = [
-  "Copy_ukraine_russia_dron...",
-  "Copy(2)_ukraine_russia_dron...",
-  "Copy(3)_ukraine_russia_dron...",
-  "Copy(4)_ukraine_russia_dron...",
-  "Copy(5)_ukraine_russia_dron...",
-];
+defineProps<{
+  recordings: RecordingSegment[];
+  selectedFileName?: string;
+}>();
+
+const emit = defineEmits<{
+  select: [fileName: string];
+}>();
+
+function formatSize(size: number) {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(size / 1024))} KB`;
+}
+
+function formatCreatedAt(createdAt: string) {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString();
+}
+
+function useFallbackStill(event: Event) {
+  const image = event.target as HTMLImageElement;
+  image.src = mediaStill;
+}
 </script>
 
 <template>
@@ -25,16 +43,21 @@ const clips = [
       </div>
     </div>
 
-    <div class="clip-strip">
+    <p v-if="!recordings.length" class="empty-browser">
+      Recorded OBS chunks will appear here after the first segment is saved.
+    </p>
+
+    <div v-else class="clip-strip">
       <article
-        v-for="(clip, index) in clips"
-        :key="clip"
+        v-for="recording in recordings"
+        :key="recording.fileName"
         class="clip-card"
-        :class="{ selected: index === 2 }"
+        :class="{ selected: recording.fileName === selectedFileName }"
+        @click="emit('select', recording.fileName)"
       >
-        <img :src="mediaStill" alt="" />
-        <h3>{{ clip }}</h3>
-        <p>00:02:30:50 | 25.5 DVB-T</p>
+        <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="useFallbackStill" />
+        <h3>{{ recording.fileName }}</h3>
+        <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
       </article>
     </div>
   </section>

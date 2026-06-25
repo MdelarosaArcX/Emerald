@@ -25,9 +25,10 @@ type IngestStatus = {
   activeStreams: string[];
 };
 
-type RecordingSegment = {
+export type RecordingSegment = {
   fileName: string;
   url: string;
+  thumbnailUrl: string;
   size: number;
   createdAt: string;
 };
@@ -53,12 +54,18 @@ export const useRecorderStore = defineStore("recorder", {
     previewStatus: null as PreviewStatus | null,
     ingestStatus: null as IngestStatus | null,
     recordings: [] as RecordingSegment[],
+    selectedRecordingFileName: "",
     message: "",
     isBusy: false,
   }),
   getters: {
     isRecording: (state) => Boolean(state.recorderStatus?.isRecording),
     activePreviewUrl: (state) => state.previewStatus?.previewUrl || "/hls/obs-preview/index.m3u8",
+    selectedRecording: (state) => {
+      return state.recordings.find((recording) => recording.fileName === state.selectedRecordingFileName)
+        || state.recordings[0]
+        || null;
+    },
   },
   actions: {
     loadSettings() {
@@ -86,7 +93,16 @@ export const useRecorderStore = defineStore("recorder", {
       this.previewStatus = preview;
       this.ingestStatus = ingest;
       this.recordings = recordings;
+      if (!this.selectedRecordingFileName && recordings.length) {
+        this.selectedRecordingFileName = recordings[0].fileName;
+      }
+      if (this.selectedRecordingFileName && !recordings.some((item) => item.fileName === this.selectedRecordingFileName)) {
+        this.selectedRecordingFileName = recordings[0]?.fileName || "";
+      }
       this.message = recording.lastMessage || preview.lastMessage || ingest.lastMessage || "";
+    },
+    selectRecording(fileName: string) {
+      this.selectedRecordingFileName = fileName;
     },
     async start() {
       this.isBusy = true;
