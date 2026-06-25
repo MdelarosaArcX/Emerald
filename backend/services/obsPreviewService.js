@@ -32,6 +32,7 @@ class ObsPreviewService {
 
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
+    const isUdpInput = isUdpInputUrl(inputUrl);
     const playlistPath = path.join(this.previewRoot, "index.m3u8");
     const sessionId = String(Date.now());
     const segmentPattern = path.join(this.previewRoot, `segment-${sessionId}-%05d.ts`);
@@ -42,15 +43,7 @@ class ObsPreviewService {
       "-i", inputUrl,
       "-map", "0:v:0",
       "-map", "0:a?",
-      "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-tune", "zerolatency",
-      "-profile:v", "main",
-      "-pix_fmt", "yuv420p",
-      "-g", "60",
-      "-keyint_min", "60",
-      "-sc_threshold", "0",
-      "-c:a", "aac",
+      ...buildPreviewCodecArgs(isUdpInput),
       "-f", "hls",
       "-hls_time", "2",
       "-hls_list_size", "10",
@@ -277,5 +270,25 @@ function buildUdpInputArgs(inputUrl) {
     "-probesize", "50M",
     "-analyzeduration", "50M",
     "-max_delay", "500000",
+  ];
+}
+
+function buildPreviewCodecArgs(isUdpInput) {
+  if (isUdpInput) {
+    return [
+      "-c", "copy",
+    ];
+  }
+
+  return [
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-tune", "zerolatency",
+    "-profile:v", "main",
+    "-pix_fmt", "yuv420p",
+    "-g", "60",
+    "-keyint_min", "60",
+    "-sc_threshold", "0",
+    "-c:a", "aac",
   ];
 }
