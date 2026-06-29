@@ -9,10 +9,10 @@ const formbody = require("@fastify/formbody");
 const multipart = require("@fastify/multipart");
 const fastifyStatic = require("@fastify/static");
 
-const { ObsRecordingService } = require("./services/obsRecordingService");
 const { normalizeFfmpegPath } = require("./services/obsRecordingService");
-const { ObsPreviewService } = require("./services/obsPreviewService");
+const { ObsIngestService } = require("./services/obsIngestService");
 const { RtmpIngestService } = require("./services/rtmpIngestService");
+const { WebrtcPreviewService } = require("./services/webrtcPreviewService");
 const { probeObsStream } = require("./services/obsStreamProbeService");
 const { runtimeServices } = require("./services/runtimeServices");
 
@@ -31,9 +31,9 @@ const app = fastify({
   bodyLimit: 2 * 1024 * 1024 * 1024,
 });
 
-const obsRecorder = new ObsRecordingService(recordingsPath);
-const obsPreview = new ObsPreviewService(webRoot);
+const obsIngest = new ObsIngestService(recordingsPath, webRoot);
 const rtmpIngest = new RtmpIngestService();
+const webrtcPreview = new WebrtcPreviewService();
 rtmpIngest.start();
 
 registerPlugins(app).then(() => registerRoutes(app)).then(start).catch((error) => {
@@ -67,7 +67,7 @@ async function registerPlugins(server) {
     },
   });
   await server.register(fastifyStatic, {
-    root: path.join(contentRoot, "node_modules", "hls.js", "dist"),
+    root: path.dirname(require.resolve("hls.js/dist/hls.min.js")),
     prefix: "/lib/hls.js/",
     decorateReply: false,
   });
@@ -91,6 +91,7 @@ function registerRoutes(server) {
     queues: runtimeServices.queueStatus(),
     postgres: runtimeServices.postgresStatus(),
     rtmpIngest: rtmpIngest.status,
+    webrtcPreview: webrtcPreview.status,
   }));
 
   server.post("/api/system/queue-test", async () => {
@@ -132,7 +133,7 @@ function registerRoutes(server) {
     };
   });
 
-  server.get("/api/obs-recording/status", async () => obsRecorder.status);
+  server.get("/api/obs-recording/status", async () => obsIngest.recordingStatus);
 
   server.get("/api/obs-recordings", async () => {
     const files = await fs.promises.readdir(recordingsPath);
@@ -183,12 +184,13 @@ function registerRoutes(server) {
       return reply.code(400).send({ message: localInputError });
     }
 
-    return obsRecorder.start(request.body || {});
+    const { recordingStatus } = await obsIngest.start(request.body || {});
+    return recordingStatus;
   });
 
-  server.post("/api/obs-recording/stop", async () => obsRecorder.stop());
+  server.post("/api/obs-recording/stop", async () => obsIngest.stop().recordingStatus);
 
-  server.get("/api/obs-preview/status", async () => obsPreview.status);
+  server.get("/api/obs-preview/status", async () => obsIngest.previewStatus);
 
   server.get("/api/rtmp-ingest/status", async () => rtmpIngest.status);
 
@@ -198,10 +200,28 @@ function registerRoutes(server) {
       return reply.code(400).send({ message: localInputError });
     }
 
-    return obsPreview.start(request.body || {});
+    const { previewStatus } = await obsIngest.start(request.body || {});
+    return previewStatus;
   });
 
-  server.post("/api/obs-preview/stop", async () => obsPreview.stop());
+  server.post("/api/obs-preview/stop", async () => obsIngest.stop().previewStatus);
+
+  server.get("/api/webrtc-preview/status", async () => webrtcPreview.status);
+
+  server.post("/api/webrtc-preview/start", async (request, reply) => {
+    const localInputError = rtmpIngest.getLocalInputError(request.body?.inputUrl);
+    if (localInputError) {
+      return reply.code(400).send({ message: localInputError });
+    }
+
+    try {
+      return await webrtcPreview.start(request.body || {});
+    } catch (error) {
+      return reply.code(400).send({ message: error.message });
+    }
+  });
+
+  server.post("/api/webrtc-preview/stop", async () => webrtcPreview.stop());
 
   server.post("/api/obs-stream/probe", async (request) => probeObsStream(request.body || {}));
 
@@ -219,9 +239,9 @@ async function start() {
 }
 
 const shutdown = () => {
-  obsRecorder.stop();
-  obsPreview.stop();
+  obsIngest.stop();
   rtmpIngest.stop();
+  webrtcPreview.stopAll();
   runtimeServices.close()
     .finally(() => app.close())
     .finally(() => process.exit(0));

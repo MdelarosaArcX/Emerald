@@ -6,12 +6,22 @@ const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
 
 const previewPath = "/hls/obs-preview/index.m3u8";
 
-class ObsPreviewService {
-  constructor(webRootPath) {
+class ObsIngestService {
+  constructor(recordingsPath, webRootPath) {
+    this.recordingsPath = recordingsPath;
     this.previewRoot = path.join(webRootPath, "hls", "obs-preview");
     fs.mkdirSync(this.previewRoot, { recursive: true });
     this.process = null;
-    this.status = {
+    this.recordingStatus = {
+      isRecording: false,
+      startedAt: null,
+      inputUrl: null,
+      outputPattern: null,
+      segmentSeconds: 120,
+      container: "mp4",
+      lastMessage: null,
+    };
+    this.previewStatus = {
       isRunning: false,
       startedAt: null,
       previewUrl: previewPath,
@@ -21,34 +31,46 @@ class ObsPreviewService {
 
   async start(request) {
     if (!request.inputUrl || !String(request.inputUrl).trim()) {
-      throw new Error("OBS recording URL is required before preview can start.");
+      throw new Error("OBS recording URL is required.");
     }
 
     if (this.isProcessRunning()) {
-      return this.status;
+      return { recordingStatus: this.recordingStatus, previewStatus: this.previewStatus };
     }
 
     this.cleanPreviewFiles();
 
+    const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
+    const container = normalizeContainer(request.container);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
     const isUdpInput = isUdpInputUrl(inputUrl);
+    const outputPattern = path.join(this.recordingsPath, `obs-%Y%m%d-%H%M%S.${container.extension}`);
     const playlistPath = path.join(this.previewRoot, "index.m3u8");
     const sessionId = String(Date.now());
     const segmentPattern = path.join(this.previewRoot, `segment-${sessionId}-%05d.ts`);
+
     const args = [
       "-hide_banner",
       "-loglevel", "warning",
       ...buildUdpInputArgs(inputUrl),
       "-i", inputUrl,
+      "-map", "0",
+      "-c", "copy",
+      "-f", "segment",
+      "-segment_time", String(segmentSeconds),
+      "-reset_timestamps", "1",
+      "-strftime", "1",
+      "-segment_format", container.format,
+      outputPattern,
       "-map", "0:v:0",
       "-map", "0:a?",
       ...buildPreviewCodecArgs(isUdpInput),
       "-f", "hls",
-      "-hls_time", "2",
-      "-hls_list_size", "10",
+      "-hls_time", "0.32",
+      "-hls_list_size", "12",
       "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments",
-      "-hls_delete_threshold", "10",
+      "-hls_delete_threshold", "12",
       "-hls_segment_filename", segmentPattern,
       playlistPath,
     ];
@@ -60,8 +82,9 @@ class ObsPreviewService {
       });
     } catch (error) {
       this.process = null;
-      this.status = { ...this.status, isRunning: false, lastMessage: error.message };
-      throw new Error(`Unable to start FFmpeg preview at '${ffmpegPath}'.`);
+      this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: error.message };
+      this.previewStatus = { ...this.previewStatus, isRunning: false, lastMessage: error.message };
+      throw new Error(`Unable to start FFmpeg at '${ffmpegPath}'. Use the full path to ffmpeg.exe or a folder that contains ffmpeg.exe.`);
     }
 
     const startedProcess = this.process;
@@ -69,46 +92,60 @@ class ObsPreviewService {
     startedProcess.stderr.on("data", (chunk) => {
       const message = chunk.toString().trim();
       if (message) {
-        this.status = { ...this.status, lastMessage: message };
+        this.recordingStatus = { ...this.recordingStatus, lastMessage: message };
+        this.previewStatus = { ...this.previewStatus, lastMessage: message };
       }
     });
 
     startedProcess.on("error", (error) => {
-      this.status = { ...this.status, isRunning: false, startedAt: null, lastMessage: error.message };
+      this.recordingStatus = { ...this.recordingStatus, isRecording: false, startedAt: null, lastMessage: error.message };
+      this.previewStatus = { ...this.previewStatus, isRunning: false, startedAt: null, lastMessage: error.message };
       if (this.process === startedProcess) {
         this.process = null;
       }
     });
 
     startedProcess.on("exit", () => {
-      this.status = { ...this.status, isRunning: false, lastMessage: explainFfmpegMessage(this.status.lastMessage || "Preview FFmpeg stopped.", inputUrl) };
+      const detail = explainFfmpegMessage(this.recordingStatus.lastMessage || "FFmpeg stopped.", inputUrl);
+      this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: detail };
+      this.previewStatus = { ...this.previewStatus, isRunning: false, lastMessage: detail };
       this.process = null;
     });
 
-    this.status = {
+    this.recordingStatus = {
+      isRecording: true,
+      startedAt: new Date().toISOString(),
+      inputUrl,
+      outputPattern,
+      segmentSeconds,
+      container: container.extension,
+      lastMessage: null,
+    };
+    this.previewStatus = {
       isRunning: true,
       startedAt: new Date().toISOString(),
       previewUrl: `${previewPath}?v=${sessionId}`,
       lastMessage: null,
     };
 
-    await waitForFfmpegStartup(startedProcess, ffmpegPath, "Preview FFmpeg", () => this.status.lastMessage, inputUrl);
+    await waitForFfmpegStartup(startedProcess, ffmpegPath, () => this.recordingStatus.lastMessage, inputUrl);
 
     try {
-      await waitForPlaylistFile(startedProcess, playlistPath, () => this.status.lastMessage, inputUrl);
+      await waitForPlaylistFile(startedProcess, playlistPath, () => this.previewStatus.lastMessage, inputUrl);
     } catch (error) {
       this.stop();
-      this.status = { ...this.status, isRunning: false, lastMessage: error.message };
+      this.previewStatus = { ...this.previewStatus, isRunning: false, lastMessage: error.message };
       throw error;
     }
 
-    return this.status;
+    return { recordingStatus: this.recordingStatus, previewStatus: this.previewStatus };
   }
 
   stop() {
     if (!this.process) {
-      this.status = { ...this.status, isRunning: false };
-      return this.status;
+      this.recordingStatus = { ...this.recordingStatus, isRecording: false };
+      this.previewStatus = { ...this.previewStatus, isRunning: false };
+      return { recordingStatus: this.recordingStatus, previewStatus: this.previewStatus };
     }
 
     const processToStop = this.process;
@@ -128,8 +165,9 @@ class ObsPreviewService {
     }
 
     this.process = null;
-    this.status = { ...this.status, isRunning: false, lastMessage: "Preview stopped." };
-    return this.status;
+    this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: "Recording stopped." };
+    this.previewStatus = { ...this.previewStatus, isRunning: false, lastMessage: "Preview stopped." };
+    return { recordingStatus: this.recordingStatus, previewStatus: this.previewStatus };
   }
 
   isProcessRunning() {
@@ -144,10 +182,31 @@ class ObsPreviewService {
 }
 
 module.exports = {
-  ObsPreviewService,
+  ObsIngestService,
 };
 
-function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage, inputUrl) {
+function normalizeContainer(container) {
+  switch (String(container || "").trim().toLowerCase()) {
+    case "mkv":
+    case "matroska":
+      return { extension: "mkv", format: "matroska" };
+    case "ts":
+    case "mpegts":
+      return { extension: "ts", format: "mpegts" };
+    default:
+      return { extension: "mp4", format: "mp4" };
+  }
+}
+
+function clamp(value, min, max) {
+  if (Number.isNaN(value)) {
+    return min;
+  }
+
+  return Math.min(Math.max(value, min), max);
+}
+
+function waitForFfmpegStartup(process, ffmpegPath, getLastMessage, inputUrl) {
   return new Promise((resolve, reject) => {
     let settled = false;
 
@@ -168,12 +227,12 @@ function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage, inputU
     };
 
     const onError = (error) => {
-      fail(formatFfmpegStartError(label, ffmpegPath, error));
+      fail(formatFfmpegStartError(ffmpegPath, error));
     };
 
     const onExit = (code, signal) => {
       const detail = explainFfmpegMessage(getLastMessage?.(), inputUrl);
-      fail(`${label} stopped before preview could start${formatExit(code, signal)}.${detail ? ` ${detail}` : " Check the FFmpeg path and OBS stream URL."}`);
+      fail(`FFmpeg stopped before it could start${formatExit(code, signal)}.${detail ? ` ${detail}` : " Check the FFmpeg path and OBS stream URL."}`);
     };
 
     const timeout = setTimeout(() => {
@@ -191,12 +250,12 @@ function waitForFfmpegStartup(process, ffmpegPath, label, getLastMessage, inputU
   });
 }
 
-function formatFfmpegStartError(label, ffmpegPath, error) {
+function formatFfmpegStartError(ffmpegPath, error) {
   if (error?.code === "ENOENT") {
-    return `Unable to start ${label} at '${ffmpegPath}'. FFmpeg was not found. Install FFmpeg and add it to PATH, set FFMPEG_PATH in backend/.env, or paste the full path to ffmpeg.exe in the FFmpeg Path field.`;
+    return `Unable to start FFmpeg at '${ffmpegPath}'. FFmpeg was not found. Install FFmpeg and add it to PATH, set FFMPEG_PATH in backend/.env, or paste the full path to ffmpeg.exe in the FFmpeg Path field.`;
   }
 
-  return `Unable to start ${label} at '${ffmpegPath}'. ${error?.message || "Check the FFmpeg path."}`;
+  return `Unable to start FFmpeg at '${ffmpegPath}'. ${error?.message || "Check the FFmpeg path."}`;
 }
 
 function formatExit(code, signal) {
@@ -226,7 +285,7 @@ function waitForPlaylistFile(process, playlistPath, getLastMessage, inputUrl) {
       }
 
       if (process.exitCode !== null || process.signalCode !== null || process.killed) {
-        reject(new Error(explainFfmpegMessage(getLastMessage() || "Preview FFmpeg stopped before creating the HLS playlist.", inputUrl)));
+        reject(new Error(explainFfmpegMessage(getLastMessage() || "FFmpeg stopped before creating the HLS playlist.", inputUrl)));
         return;
       }
 
@@ -269,7 +328,7 @@ function buildUdpInputArgs(inputUrl) {
     "-fflags", "+discardcorrupt",
     "-probesize", "50M",
     "-analyzeduration", "50M",
-    "-max_delay", "500000",
+    "-max_delay", "200000",
   ];
 }
 
