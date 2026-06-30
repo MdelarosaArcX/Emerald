@@ -3,6 +3,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const staticFfprobe = require("ffprobe-static");
+const { normalizeInputUrl } = require("./ffmpegInputUrl");
 
 async function probeObsStream(request) {
   if (!request.inputUrl || !String(request.inputUrl).trim()) {
@@ -15,7 +16,7 @@ async function probeObsStream(request) {
     "-select_streams", "v:0",
     "-show_entries", "stream=codec_name,width,height,avg_frame_rate,r_frame_rate,bit_rate:format=bit_rate",
     "-of", "json",
-    String(request.inputUrl).trim(),
+    normalizeInputUrl(request.inputUrl),
   ]);
 
   return parseResult(output);
@@ -32,7 +33,7 @@ function runFfprobe(ffprobePath, args) {
     let errorOutput = "";
     const timeout = setTimeout(() => {
       process.kill("SIGKILL");
-      reject(new Error("ffprobe timed out while reading the OBS stream. Make sure OBS is streaming and the URL is reachable."));
+      reject(new Error("ffprobe timed out while reading the input stream. Make sure the video source is sending data and the URL is reachable."));
     }, 8000);
 
     process.stdout.on("data", (chunk) => {
