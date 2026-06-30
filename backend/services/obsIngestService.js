@@ -4,13 +4,9 @@ const { spawn } = require("node:child_process");
 const { normalizeFfmpegPath } = require("./obsRecordingService");
 const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
 
-const previewPath = "/hls/obs-preview/index.m3u8";
-
 class ObsIngestService {
-  constructor(recordingsPath, webRootPath) {
+  constructor(recordingsPath) {
     this.recordingsPath = recordingsPath;
-    this.previewRoot = path.join(webRootPath, "hls", "obs-preview");
-    fs.mkdirSync(this.previewRoot, { recursive: true });
     this.process = null;
     this.recordingStatus = {
       isRecording: false,
@@ -21,12 +17,6 @@ class ObsIngestService {
       container: "mp4",
       lastMessage: null,
     };
-    this.previewStatus = {
-      isRunning: false,
-      startedAt: null,
-      previewUrl: previewPath,
-      lastMessage: null,
-    };
   }
 
   async start(request) {
@@ -35,20 +25,14 @@ class ObsIngestService {
     }
 
     if (this.isProcessRunning()) {
-      return { recordingStatus: this.recordingStatus, previewStatus: this.previewStatus };
+      return { recordingStatus: this.recordingStatus };
     }
-
-    this.cleanPreviewFiles();
 
     const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
     const container = normalizeContainer(request.container);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
-    const isUdpInput = isUdpInputUrl(inputUrl);
     const outputPattern = path.join(this.recordingsPath, `obs-%Y%m%d-%H%M%S.${container.extension}`);
-    const playlistPath = path.join(this.previewRoot, "index.m3u8");
-    const sessionId = String(Date.now());
-    const segmentPattern = path.join(this.previewRoot, `segment-${sessionId}-%05d.ts`);
 
     const args = [
       "-hide_banner",
@@ -63,16 +47,6 @@ class ObsIngestService {
       "-strftime", "1",
       "-segment_format", container.format,
       outputPattern,
-      "-map", "0:v:0",
-      "-map", "0:a?",
-      ...buildPreviewCodecArgs(isUdpInput),
-      "-f", "hls",
-      "-hls_time", "0.32",
-      "-hls_list_size", "12",
-      "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments",
-      "-hls_delete_threshold", "12",
-      "-hls_segment_filename", segmentPattern,
-      playlistPath,
     ];
 
     try {
@@ -83,7 +57,6 @@ class ObsIngestService {
     } catch (error) {
       this.process = null;
       this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: error.message };
-      this.previewStatus = { ...this.previewStatus, isRunning: false, lastMessage: error.message };
       throw new Error(`Unable to start FFmpeg at '${ffmpegPath}'. Use the full path to ffmpeg.exe or a folder that contains ffmpeg.exe.`);
     }
 
@@ -93,13 +66,11 @@ class ObsIngestService {
       const message = chunk.toString().trim();
       if (message) {
         this.recordingStatus = { ...this.recordingStatus, lastMessage: message };
-        this.previewStatus = { ...this.previewStatus, lastMessage: message };
       }
     });
 
     startedProcess.on("error", (error) => {
       this.recordingStatus = { ...this.recordingStatus, isRecording: false, startedAt: null, lastMessage: error.message };
-      this.previewStatus = { ...this.previewStatus, isRunning: false, startedAt: null, lastMessage: error.message };
       if (this.process === startedProcess) {
         this.process = null;
       }
@@ -108,7 +79,6 @@ class ObsIngestService {
     startedProcess.on("exit", () => {
       const detail = explainFfmpegMessage(this.recordingStatus.lastMessage || "FFmpeg stopped.", inputUrl);
       this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: detail };
-      this.previewStatus = { ...this.previewStatus, isRunning: false, lastMessage: detail };
       this.process = null;
     });
 
@@ -121,31 +91,16 @@ class ObsIngestService {
       container: container.extension,
       lastMessage: null,
     };
-    this.previewStatus = {
-      isRunning: true,
-      startedAt: new Date().toISOString(),
-      previewUrl: `${previewPath}?v=${sessionId}`,
-      lastMessage: null,
-    };
 
     await waitForFfmpegStartup(startedProcess, ffmpegPath, () => this.recordingStatus.lastMessage, inputUrl);
 
-    try {
-      await waitForPlaylistFile(startedProcess, playlistPath, () => this.previewStatus.lastMessage, inputUrl);
-    } catch (error) {
-      this.stop();
-      this.previewStatus = { ...this.previewStatus, isRunning: false, lastMessage: error.message };
-      throw error;
-    }
-
-    return { recordingStatus: this.recordingStatus, previewStatus: this.previewStatus };
+    return { recordingStatus: this.recordingStatus };
   }
 
   stop() {
     if (!this.process) {
       this.recordingStatus = { ...this.recordingStatus, isRecording: false };
-      this.previewStatus = { ...this.previewStatus, isRunning: false };
-      return { recordingStatus: this.recordingStatus, previewStatus: this.previewStatus };
+      return { recordingStatus: this.recordingStatus };
     }
 
     const processToStop = this.process;
@@ -166,18 +121,11 @@ class ObsIngestService {
 
     this.process = null;
     this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: "Recording stopped." };
-    this.previewStatus = { ...this.previewStatus, isRunning: false, lastMessage: "Preview stopped." };
-    return { recordingStatus: this.recordingStatus, previewStatus: this.previewStatus };
+    return { recordingStatus: this.recordingStatus };
   }
 
   isProcessRunning() {
     return Boolean(this.process && !this.process.killed && this.process.exitCode === null && this.process.signalCode === null);
-  }
-
-  cleanPreviewFiles() {
-    for (const fileName of fs.readdirSync(this.previewRoot)) {
-      fs.rmSync(path.join(this.previewRoot, fileName), { force: true, recursive: true });
-    }
   }
 }
 
@@ -273,34 +221,6 @@ function formatExit(code, signal) {
   return parts.length ? ` (${parts.join(", ")})` : "";
 }
 
-function waitForPlaylistFile(process, playlistPath, getLastMessage, inputUrl) {
-  return new Promise((resolve, reject) => {
-    const startedAt = Date.now();
-    const timeoutMs = 12000;
-
-    const check = () => {
-      if (fs.existsSync(playlistPath) && fs.statSync(playlistPath).size > 0) {
-        resolve();
-        return;
-      }
-
-      if (process.exitCode !== null || process.signalCode !== null || process.killed) {
-        reject(new Error(explainFfmpegMessage(getLastMessage() || "FFmpeg stopped before creating the HLS playlist.", inputUrl)));
-        return;
-      }
-
-      if (Date.now() - startedAt >= timeoutMs) {
-        reject(new Error(explainFfmpegMessage(getLastMessage() || "Preview HLS playlist was not created. Check that the configured input stream is sending video.", inputUrl)));
-        return;
-      }
-
-      setTimeout(check, 250).unref();
-    };
-
-    check();
-  });
-}
-
 function explainFfmpegMessage(message, inputUrl) {
   if (message && message.toLowerCase().includes("error opening input")) {
     if (String(inputUrl || "").trim().toLowerCase().startsWith("udp://")) {
@@ -329,25 +249,5 @@ function buildUdpInputArgs(inputUrl) {
     "-probesize", "50M",
     "-analyzeduration", "50M",
     "-max_delay", "200000",
-  ];
-}
-
-function buildPreviewCodecArgs(isUdpInput) {
-  if (isUdpInput) {
-    return [
-      "-c", "copy",
-    ];
-  }
-
-  return [
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-tune", "zerolatency",
-    "-profile:v", "main",
-    "-pix_fmt", "yuv420p",
-    "-g", "60",
-    "-keyint_min", "60",
-    "-sc_threshold", "0",
-    "-c:a", "aac",
   ];
 }
