@@ -9,6 +9,7 @@ const recorder = useRecorderStore();
 const refreshHandle = ref<number | null>(null);
 const clockHandle = ref<number | null>(null);
 const now = ref(Date.now());
+const librarySplitView = ref(false);
 
 const statusLabel = computed(() => {
   if (recorder.isRecording) return "Recording";
@@ -90,6 +91,10 @@ function configureCaptureSource() {
   document.querySelector(".recording-card")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+function toggleLibrarySplitView() {
+  librarySplitView.value = !librarySplitView.value;
+}
+
 function formatSize(size: number) {
   if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(size / 1024))} KB`;
@@ -125,7 +130,7 @@ function pad(value: number) {
 <template>
   <main class="app-shell">
     <header class="topbar">
-      <a class="brand" href="/">Emerald IP</a>
+      <a class="brand" href="/">Emerald Capture</a>
       <nav class="primary-nav" aria-label="Primary">
         <a class="active" href="/">Monitoring</a>
         <a href="/">Broadcast</a>
@@ -148,10 +153,14 @@ function pad(value: number) {
           :title="selectedRecording?.fileName"
           description="Recorded OBS segment from backend storage."
           :detail="libraryDetail"
+          :split-view="librarySplitView"
+          @toggle-split-view="toggleLibrarySplitView"
         />
         <CanvasWorkspace
           :recordings="recorder.recordings"
           :selected-file-name="recorder.selectedRecordingFileName"
+          :selected-recording="selectedRecording"
+          :split-view="librarySplitView"
           @select="recorder.selectRecording"
         />
       </section>

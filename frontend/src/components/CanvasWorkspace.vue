@@ -1,10 +1,13 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import mediaStill from "../assets/reference-media.png";
 import type { RecordingSegment } from "../stores/recorder";
 
-defineProps<{
+const props = defineProps<{
   recordings: RecordingSegment[];
   selectedFileName?: string;
+  selectedRecording?: RecordingSegment | null;
+  splitView?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -26,6 +29,13 @@ function useFallbackStill(event: Event) {
   const image = event.target as HTMLImageElement;
   image.src = mediaStill;
 }
+
+const selectedRecording = computed(() => {
+  return props.selectedRecording
+    || props.recordings.find((recording) => recording.fileName === props.selectedFileName)
+    || props.recordings[0]
+    || null;
+});
 </script>
 
 <template>
@@ -47,7 +57,7 @@ function useFallbackStill(event: Event) {
       Recorded OBS chunks will appear here after the first segment is saved.
     </p>
 
-    <div v-else class="clip-strip">
+    <div v-else-if="!splitView" class="clip-strip">
       <article
         v-for="recording in recordings"
         :key="recording.fileName"
@@ -59,6 +69,50 @@ function useFallbackStill(event: Event) {
         <h3>{{ recording.fileName }}</h3>
         <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
       </article>
+    </div>
+
+    <div v-else class="clip-browser-split">
+      <div class="clip-strip clip-strip-split">
+        <article
+          v-for="recording in recordings"
+          :key="recording.fileName"
+          class="clip-card"
+          :class="{ selected: recording.fileName === selectedFileName }"
+          @click="emit('select', recording.fileName)"
+        >
+          <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="useFallbackStill" />
+          <h3>{{ recording.fileName }}</h3>
+          <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
+        </article>
+      </div>
+
+      <aside class="clip-meta-panel" aria-label="Clip metadata">
+        <div class="clip-meta-preview">
+          <img
+            :src="selectedRecording?.thumbnailUrl || mediaStill"
+            :alt="selectedRecording?.fileName || 'Selected clip'"
+            @error="useFallbackStill"
+          />
+        </div>
+        <dl class="clip-meta-list">
+          <div>
+            <dt>File</dt>
+            <dd>{{ selectedRecording?.fileName || "--" }}</dd>
+          </div>
+          <div>
+            <dt>Created</dt>
+            <dd>{{ selectedRecording ? formatCreatedAt(selectedRecording.createdAt) : "--" }}</dd>
+          </div>
+          <div>
+            <dt>Size</dt>
+            <dd>{{ selectedRecording ? formatSize(selectedRecording.size) : "--" }}</dd>
+          </div>
+          <div>
+            <dt>URL</dt>
+            <dd>{{ selectedRecording?.url || "--" }}</dd>
+          </div>
+        </dl>
+      </aside>
     </div>
   </section>
 </template>

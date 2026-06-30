@@ -6,6 +6,14 @@
   text-rendering: optimizeLegibility;
 }
 
+@font-face {
+  font-family: "Michroma";
+  src: url("../assets/fonts/Michroma-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -32,6 +40,8 @@ a {
   width: min(1856px, calc(100% - 64px));
   margin: 0 auto;
   padding: 38px 0 36px;
+  transform: scale(0.81);
+  transform-origin: top center;
 }
 
 .topbar {
@@ -45,8 +55,10 @@ a {
 
 .brand {
   color: #35f0b1;
-  font-size: clamp(2rem, 2.3vw, 3rem);
+  font-family: "Michroma", "Rajdhani", "Eurostile", "Segoe UI", system-ui, sans-serif;
+  font-size: clamp(1.62rem, 1.863vw, 2.43rem);
   font-weight: 400;
+  letter-spacing: 0.03em;
   line-height: 1;
 }
 
@@ -55,7 +67,9 @@ a {
   align-items: center;
   gap: clamp(28px, 3vw, 48px);
   color: #98a7cb;
-  font-size: clamp(1.1rem, 1.25vw, 1.45rem);
+  font-family: "Michroma", "Rajdhani", "Eurostile", "Segoe UI", system-ui, sans-serif;
+  font-size: clamp(0.891rem, 1.0125vw, 1.1745rem);
+  letter-spacing: 0.02em;
 }
 
 .primary-nav .active {
@@ -494,79 +508,56 @@ dd {
   transform: translate(-50%, -50%);
 }
 
-.settings::before {
-  top: 50%;
-  left: 50%;
-  width: 20px;
-  height: 20px;
-  border: 5px dotted currentColor;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
+.transport button.settings {
+  width: 22px;
+  height: 22px;
+  border-radius: 0;
+  background: #293d6a;
+  box-shadow: none;
 }
 
-.settings::after {
-  top: 50%;
-  left: 50%;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-  transform: translate(-50%, -50%);
+.transport button.settings img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 4px;
 }
 
-.capture .pause::before,
-.capture .pause::after {
-  width: 4px;
-  height: 14px;
+.transport button.split-view {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.capture .pause::before {
-  left: 6px;
+.transport button.split-view span {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 12px;
 }
 
-.capture .pause::after {
-  right: 6px;
-}
-
-.capture .play::before {
-  border-top-width: 7px;
-  border-bottom-width: 7px;
-  border-left-width: 12px;
-  
-}
-button.pause.active.play::before {
- width: 4px!important;
-  height: 1px!important;
-}
-.capture .stop::before {
-  width: 11px;
-  height: 11px;
+.transport button.split-view span::before,
+.transport button.split-view span::after {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  content: "";
+  border: 2px solid currentColor;
   border-radius: 2px;
 }
 
-.capture .fullscreen::before {
-  width: 16px;
-  height: 16px;
-  background:
-    linear-gradient(currentColor 0 0) left top / 6px 3px no-repeat,
-    linear-gradient(currentColor 0 0) left top / 3px 6px no-repeat,
-    linear-gradient(currentColor 0 0) right top / 6px 3px no-repeat,
-    linear-gradient(currentColor 0 0) right top / 3px 6px no-repeat,
-    linear-gradient(currentColor 0 0) left bottom / 6px 3px no-repeat,
-    linear-gradient(currentColor 0 0) left bottom / 3px 6px no-repeat,
-    linear-gradient(currentColor 0 0) right bottom / 6px 3px no-repeat,
-    linear-gradient(currentColor 0 0) right bottom / 3px 6px no-repeat;
+.transport button.split-view span::before {
+  left: 0;
 }
 
-.capture .settings::before {
-  width: 17px;
-  height: 17px;
-  border-width: 4px;
+.transport button.split-view span::after {
+  right: 0;
 }
 
-.capture .settings::after {
-  width: 6px;
-  height: 6px;
+.transport button.split-view.active {
+  color: #35f0b1;
 }
 
 .timecode {
@@ -578,7 +569,9 @@ button.pause.active.play::before {
   padding: 0 10px;
   background: #ff4d57;
   color: #ffffff;
-  font-size: 1.12rem;
+  font-family: "Michroma", "Rajdhani", "Eurostile", "Segoe UI", system-ui, sans-serif;
+  font-size: 0.907rem;
+  letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
   line-height: 25px;
 }
@@ -857,6 +850,65 @@ button:disabled {
   overflow-x: auto;
 }
 
+.clip-browser-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+  gap: 12px;
+  margin-top: 2px;
+  align-items: stretch;
+}
+
+.clip-strip-split {
+  grid-template-columns: repeat(4, minmax(96px, 1fr));
+  gap: 6px;
+  padding-right: 4px;
+  overflow: auto;
+  max-height: 420px;
+}
+
+.clip-strip-split .clip-card {
+  min-width: 0;
+}
+
+.clip-meta-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border-left: 1px solid #24365b;
+  background: #121b2f;
+}
+
+.clip-meta-preview img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border: 1px solid #27498f;
+  background: #070b13;
+}
+
+.clip-meta-list {
+  display: grid;
+  gap: 10px;
+}
+
+.clip-meta-list div {
+  display: grid;
+  gap: 3px;
+}
+
+.clip-meta-list dt {
+  color: rgba(168, 177, 204, 0.72);
+  font-size: 0.82rem;
+}
+
+.clip-meta-list dd {
+  margin: 0;
+  color: #f2f6ff;
+  font-size: 0.94rem;
+  word-break: break-word;
+}
+
 .clip-card {
   min-width: 188px;
   color: #8f9bb7;
@@ -913,6 +965,15 @@ button:disabled {
   .capture-deck {
     margin-top: 20px;
   }
+
+  .clip-browser-split {
+    grid-template-columns: 1fr;
+  }
+
+  .clip-meta-panel {
+    border-left: 0;
+    border-top: 1px solid #24365b;
+  }
 }
 
 @media (max-width: 700px) {
@@ -949,5 +1010,10 @@ button:disabled {
 
   .transport {
     overflow-x: auto;
+  }
+
+  .clip-strip-split {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: none;
   }
 }

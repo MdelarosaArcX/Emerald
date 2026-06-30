@@ -2,6 +2,7 @@
 import Hls from "hls.js";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import mediaStill from "../assets/reference-media.png";
+import settingsIcon from "../assets/icons/settings.png";
 
 const props = defineProps<{
   src: string;
@@ -22,12 +23,14 @@ const props = defineProps<{
   fpsLabel?: string;
   formatLabel?: string;
   isBusy?: boolean;
+  splitView?: boolean;
 }>();
 
 const emit = defineEmits<{
   start: [];
   stop: [];
   configure: [];
+  toggleSplitView: [];
 }>();
 
 const video = ref<HTMLVideoElement | null>(null);
@@ -143,7 +146,20 @@ function onVideoError() {
       <button v-if="mode === 'library'" type="button" class="disabled-icon" aria-label="Disable"></button>
       <button v-if="mode === 'library'" type="button" class="cut" aria-label="Cut"></button>
       <button type="button" class="fullscreen" aria-label="Fullscreen"></button>
-      <button v-if="isCapture" type="button" class="settings" aria-label="Settings" @click="emit('configure')"></button>
+      <button
+        v-if="mode === 'library'"
+        type="button"
+        class="split-view"
+        :class="{ active: splitView }"
+        aria-label="Toggle clip split view"
+        :aria-pressed="Boolean(splitView)"
+        @click="emit('toggleSplitView')"
+      >
+        <span aria-hidden="true"></span>
+      </button>
+      <button v-if="isCapture" type="button" class="settings" aria-label="Settings" @click="emit('configure')">
+        <img :src="settingsIcon" alt="" aria-hidden="true" />
+      </button>
     </div>
 
     <dl v-if="isCapture" class="capture-meta">
