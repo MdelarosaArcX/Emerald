@@ -31,7 +31,7 @@ const app = fastify({
   bodyLimit: 2 * 1024 * 1024 * 1024,
 });
 
-const obsIngest = new ObsIngestService(recordingsPath, webRoot);
+const obsIngest = new ObsIngestService(recordingsPath);
 const rtmpIngest = new RtmpIngestService();
 const webrtcPreview = new WebrtcPreviewService();
 rtmpIngest.start();
@@ -54,21 +54,6 @@ async function registerPlugins(server) {
   await server.register(fastifyStatic, {
     root: webRoot,
     prefix: "/",
-    decorateReply: false,
-    setHeaders: (response, filePath) => {
-      if (filePath.toLowerCase().endsWith(".m3u8")) {
-        response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-        response.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      }
-
-      if (filePath.toLowerCase().endsWith(".ts")) {
-        response.setHeader("Content-Type", "video/mp2t");
-      }
-    },
-  });
-  await server.register(fastifyStatic, {
-    root: path.dirname(require.resolve("hls.js/dist/hls.min.js")),
-    prefix: "/lib/hls.js/",
     decorateReply: false,
   });
   await server.register(fastifyStatic, {
@@ -196,21 +181,7 @@ function registerRoutes(server) {
 
   server.post("/api/obs-recording/stop", async () => obsIngest.stop().recordingStatus);
 
-  server.get("/api/obs-preview/status", async () => obsIngest.previewStatus);
-
   server.get("/api/rtmp-ingest/status", async () => rtmpIngest.status);
-
-  server.post("/api/obs-preview/start", async (request, reply) => {
-    const localInputError = rtmpIngest.getLocalInputError(request.body?.inputUrl);
-    if (localInputError) {
-      return reply.code(400).send({ message: localInputError });
-    }
-
-    const { previewStatus } = await obsIngest.start(request.body || {});
-    return previewStatus;
-  });
-
-  server.post("/api/obs-preview/stop", async () => obsIngest.stop().previewStatus);
 
   server.get("/api/webrtc-preview/status", async () => webrtcPreview.status);
 

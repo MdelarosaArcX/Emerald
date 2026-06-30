@@ -1,12 +1,10 @@
 const previewVideo = document.getElementById("previewVideo");
 const obsInputUrl = document.getElementById("obsInputUrl");
-const obsPreviewUrl = document.getElementById("obsPreviewUrl");
 const recordingContainer = document.getElementById("recordingContainer");
 const segmentSeconds = document.getElementById("segmentSeconds");
 const ffmpegPath = document.getElementById("ffmpegPath");
 const startPreviewButton = document.getElementById("startPreviewButton");
 const stopRecordingButton = document.getElementById("stopRecordingButton");
-const copyPreviewUrlButton = document.getElementById("copyPreviewUrlButton");
 const recordingBadge = document.getElementById("recordingBadge");
 const recordingTimer = document.getElementById("recordingTimer");
 const emptyState = document.getElementById("emptyState");
@@ -24,13 +22,10 @@ let statusPollHandle = null;
 let timerHandle = null;
 let recordingStartedAt = null;
 let segmentNames = new Set();
-let hlsPlayer = null;
 let lastProbeAt = 0;
-let currentPreviewPath = "/hls/obs-preview/index.m3u8";
 let activePreviewUrl = "";
 let webrtcPeerConnection = null;
 let webrtcSessionUrl = null;
-let usingWebrtcPreview = false;
 
 const obsSettingsKey = "emerald.streaming.obs";
 
@@ -105,35 +100,12 @@ const loadIngestStatus = async () => {
   }
 };
 
-const startServerPreview = async () => {
-  const response = await fetch("/api/obs-preview/start", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      inputUrl: obsInputUrl.value.trim(),
-      ffmpegPath: ffmpegPath.value.trim() || "ffmpeg",
-      segmentSeconds: Number(segmentSeconds.value),
-      container: recordingContainer.value,
-    }),
-  });
-
-  const result = await response.json();
-
-  if (!response.ok) {
-    throw new Error(result.message || "Unable to start server HLS preview.");
-  }
-
-  return result.previewUrl;
-};
-
 const getWebrtcInputUrl = () => {
   const inputUrl = obsInputUrl.value.trim();
 
   // A unicast UDP socket only delivers to one listener. DeltacastCaptureService relays the
   // same H.264 stream to (recording port + 1) via Streaming:WebRtcRelayUrl in appsettings.json
-  // specifically so the WebRTC publisher doesn't fight the recorder/HLS ffmpeg for port 5000.
+  // specifically so the WebRTC publisher doesn't fight the recorder ffmpeg for port 5000.
   if (inputUrl.toLowerCase().startsWith("udp://")) {
     try {
       const parsed = new URL(inputUrl);
@@ -162,7 +134,7 @@ const startWebrtcPreview = async () => {
   const result = await response.json();
 
   if (!response.ok) {
-    throw new Error(result.message || "Unable to start the low-latency WebRTC preview.");
+    throw new Error(result.message || "Unable to start the WebRTC preview.");
   }
 
   return result.whepUrl;
@@ -178,14 +150,11 @@ const stopWebrtcPeerConnection = () => {
     fetch(webrtcSessionUrl, { method: "DELETE" }).catch(() => {});
     webrtcSessionUrl = null;
   }
-
-  usingWebrtcPreview = false;
 };
 
 const playWebRtcPreview = async (whepUrl) => {
   const pc = new RTCPeerConnection();
   webrtcPeerConnection = pc;
-  usingWebrtcPreview = true;
 
   pc.addTransceiver("video", { direction: "recvonly" });
 
@@ -221,55 +190,11 @@ const playWebRtcPreview = async (whepUrl) => {
 
   pc.close();
   webrtcPeerConnection = null;
-  usingWebrtcPreview = false;
   throw new Error(lastError || "WebRTC preview did not become available in time.");
 };
 
-const getSharePreviewUrl = () => {
-  return new URL(currentPreviewPath, window.location.origin).toString();
-};
-
-const refreshSharePreviewUrl = () => {
-  obsPreviewUrl.value = getSharePreviewUrl();
-};
-
-const copySharePreviewUrl = async () => {
-  refreshSharePreviewUrl();
-
-  try {
-    await navigator.clipboard.writeText(obsPreviewUrl.value);
-    setMessage("Preview URL copied.");
-  } catch {
-    obsPreviewUrl.select();
-    document.execCommand("copy");
-    setMessage("Preview URL copied.");
-  }
-};
-
-const waitForPlaylist = async (playlistUrl) => {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const cacheBustedUrl = new URL(playlistUrl, window.location.origin);
-    cacheBustedUrl.searchParams.set("t", String(Date.now()));
-    const response = await fetch(cacheBustedUrl.toString(), { cache: "no-store" });
-
-    if (response.ok) {
-      return;
-    }
-
-    await new Promise((resolve) => window.setTimeout(resolve, 500));
-  }
-
-  throw new Error("Preview HLS playlist was not created yet. Check that OBS is streaming and FFmpeg can read the OBS Recording URL.");
-};
-
 const resetPreviewPlayer = () => {
-  if (hlsPlayer) {
-    hlsPlayer.destroy();
-    hlsPlayer = null;
-  }
-
   stopWebrtcPeerConnection();
-
   previewVideo.srcObject = null;
   previewVideo.removeAttribute("src");
   previewVideo.load();
@@ -278,66 +203,15 @@ const resetPreviewPlayer = () => {
   emptyState.hidden = true;
 };
 
-const playPreviewUrl = async (previewUrl) => {
-  activePreviewUrl = previewUrl;
-  resetPreviewPlayer();
-
-  if (previewUrl.toLowerCase().includes(".m3u8") && window.Hls?.isSupported()) {
-    await waitForPlaylist(previewUrl);
-    hlsPlayer = new Hls({
-      liveSyncDuration: 0.5,
-      liveMaxLatencyDuration: 2,
-      maxLiveSyncPlaybackRate: 1.5,
-      manifestLoadingMaxRetry: 8,
-      levelLoadingMaxRetry: 8,
-      fragLoadingMaxRetry: 8,
-    });
-    hlsPlayer.loadSource(previewUrl);
-    hlsPlayer.attachMedia(previewVideo);
-    await new Promise((resolve, reject) => {
-      hlsPlayer.on(Hls.Events.MANIFEST_PARSED, resolve);
-      hlsPlayer.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          reject(new Error(data.details || "HLS preview failed."));
-        }
-      });
-    });
-  } else if (previewUrl.toLowerCase().includes(".m3u8") && !previewVideo.canPlayType("application/vnd.apple.mpegurl")) {
-    throw new Error("HLS preview player is unavailable. Check that /lib/hls.js/hls.min.js loads from this server.");
-  } else {
-    previewVideo.src = previewUrl;
-  }
-
-  await previewVideo.play();
-};
-
 const startPreview = async () => {
-  await fetch("/api/obs-preview/stop", { method: "POST" });
   await fetch("/api/webrtc-preview/stop", { method: "POST" });
-
-  if (window.RTCPeerConnection) {
-    try {
-      setMessage("Starting low-latency WebRTC preview...");
-      const whepUrl = await startWebrtcPreview();
-      resetPreviewPlayer();
-      activePreviewUrl = whepUrl;
-      await playWebRtcPreview(whepUrl);
-      await previewVideo.play();
-      setMessage("Preview started (WebRTC, low latency).");
-      return;
-    } catch (error) {
-      setMessage(`WebRTC preview unavailable (${error.message || error}), falling back to HLS.`);
-      await fetch("/api/webrtc-preview/stop", { method: "POST" });
-    }
-  }
-
-  setMessage("Creating local HLS preview from OBS recording URL...");
-  const previewUrl = await startServerPreview();
-  currentPreviewPath = previewUrl || currentPreviewPath;
-  refreshSharePreviewUrl();
-
-  await playPreviewUrl(previewUrl);
-  setMessage("Preview started (HLS).");
+  setMessage("Starting WebRTC preview...");
+  const whepUrl = await startWebrtcPreview();
+  resetPreviewPlayer();
+  activePreviewUrl = whepUrl;
+  await playWebRtcPreview(whepUrl);
+  await previewVideo.play();
+  setMessage("Preview started (WebRTC).");
 };
 
 const restoreServerPreview = async () => {
@@ -350,33 +224,10 @@ const restoreServerPreview = async () => {
       activePreviewUrl = webrtcStatus.whepUrl;
       await playWebRtcPreview(webrtcStatus.whepUrl);
       await previewVideo.play();
-      setMessage("Preview restored (WebRTC, low latency).");
-      return;
+      setMessage("Preview restored (WebRTC).");
     } catch (error) {
       setMessage(error.message || "Unable to restore WebRTC preview.");
     }
-  }
-
-  const response = await fetch("/api/obs-preview/status", { cache: "no-store" });
-
-  if (!response.ok) {
-    return;
-  }
-
-  const status = await response.json();
-
-  if (!status.isRunning || !status.previewUrl || activePreviewUrl === status.previewUrl) {
-    return;
-  }
-
-  currentPreviewPath = status.previewUrl;
-  refreshSharePreviewUrl();
-
-  try {
-    await playPreviewUrl(status.previewUrl);
-    setMessage("Preview restored (HLS).");
-  } catch (error) {
-    setMessage(error.message || "Unable to restore preview.");
   }
 };
 
@@ -528,7 +379,6 @@ const startRecording = async () => {
 const stopRecording = async () => {
   const response = await fetch("/api/obs-recording/stop", { method: "POST" });
   const result = await response.json();
-  await fetch("/api/obs-preview/stop", { method: "POST" });
   await fetch("/api/webrtc-preview/stop", { method: "POST" });
   resetPreviewPlayer();
   activePreviewUrl = "";
@@ -538,7 +388,6 @@ const stopRecording = async () => {
 
 startPreviewButton?.addEventListener("click", startRecording);
 stopRecordingButton?.addEventListener("click", stopRecording);
-copyPreviewUrlButton?.addEventListener("click", copySharePreviewUrl);
 [obsInputUrl, recordingContainer, segmentSeconds, ffmpegPath].forEach((element) => {
   element?.addEventListener("change", () => {
     segmentLength.textContent = `${segmentSeconds.value} seconds`;
@@ -547,7 +396,6 @@ copyPreviewUrlButton?.addEventListener("click", copySharePreviewUrl);
 });
 
 loadSettings();
-refreshSharePreviewUrl();
 loadIngestStatus();
 pollStatus();
 loadSegments();

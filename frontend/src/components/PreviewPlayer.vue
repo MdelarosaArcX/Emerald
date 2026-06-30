@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import Hls from "hls.js";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import settingsIcon from "../assets/icons/settings.png";
 
@@ -36,7 +35,10 @@ const emit = defineEmits<{
 
 const video = ref<HTMLVideoElement | null>(null);
 const hasPlayback = ref(false);
-let hls: Hls | null = null;
+
+let pc: RTCPeerConnection | null = null;
+let webrtcSessionUrl: string | null = null;
+let abortController: AbortController | null = null;
 
 const mode = computed(() => props.variant || "library");
 const isCapture = computed(() => mode.value === "capture");
@@ -45,29 +47,84 @@ const showSourcePrompt = computed(() => isCapture.value && !props.isRecording &&
 watch(() => props.src, loadSource, { immediate: true });
 
 onBeforeUnmount(() => {
-  hls?.destroy();
+  teardownWebrtc();
 });
 
 async function loadSource(src: string) {
   if (!video.value) return;
 
   hasPlayback.value = false;
-  hls?.destroy();
-  hls = null;
+  teardownWebrtc();
+  video.value.srcObject = null;
   video.value.removeAttribute("src");
   video.value.load();
 
   if (!src) return;
 
-  if (src.includes(".m3u8") && Hls.isSupported()) {
-    hls = new Hls({
-      liveSyncDurationCount: 4,
-      liveMaxLatencyDurationCount: 10,
-    });
-    hls.loadSource(src);
-    hls.attachMedia(video.value);
+  if (src.includes("/whep")) {
+    connectWebrtc(src);
   } else {
     video.value.src = src;
+  }
+}
+
+function teardownWebrtc() {
+  abortController?.abort();
+  abortController = null;
+
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+
+  if (webrtcSessionUrl) {
+    fetch(webrtcSessionUrl, { method: "DELETE" }).catch(() => {});
+    webrtcSessionUrl = null;
+  }
+}
+
+async function connectWebrtc(whepUrl: string) {
+  const ac = new AbortController();
+  abortController = ac;
+
+  const connection = new RTCPeerConnection();
+  pc = connection;
+
+  connection.addTransceiver("video", { direction: "recvonly" });
+
+  connection.ontrack = (event) => {
+    if (video.value) {
+      video.value.srcObject = event.streams[0];
+    }
+  };
+
+  const offer = await connection.createOffer();
+  await connection.setLocalDescription(offer);
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (ac.signal.aborted) return;
+
+    let response: Response | null = null;
+    try {
+      response = await fetch(whepUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp" },
+        body: connection.localDescription!.sdp,
+        signal: ac.signal,
+      });
+    } catch {
+      return;
+    }
+
+    if (response.ok) {
+      const answerSdp = await response.text();
+      const location = response.headers.get("Location");
+      webrtcSessionUrl = location ? new URL(location, whepUrl).toString() : null;
+      await connection.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
@@ -140,9 +197,9 @@ function emitPlaybackUpdate() {
       </div>
     </div>
 
-    <div class="transport" :class="{ recording: isCapture }">
+    <div class="transport" :class="{ recording: isCapture && isRecording }">
       <span v-if="isCapture && isRecording" class="record-label">
-        <i></i> {{ transportLabel || "Recording ..." }}
+        <i></i> {{ transportLabel || "Recording ..." }} {{ timecode || "00:00:00:00" }}
       </span>
       <button
         type="button"

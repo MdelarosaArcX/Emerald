@@ -322,6 +322,10 @@ dd {
   background: #233457;
 }
 
+.capture .transport.recording {
+  background: #7d1d28;
+}
+
 .transport button {
   position: relative;
   justify-self: center;
@@ -349,6 +353,14 @@ dd {
 
 .transport .active {
   color: #35f0b1;
+}
+
+.capture .transport.recording .pause.active {
+  color: #ff4d57;
+}
+
+.capture .transport.recording .stop {
+  color: #ff8a92;
 }
 
 .pause::before,
@@ -585,10 +597,14 @@ dd {
   align-items: center;
   gap: 8px;
   height: 25px;
-  padding-left: 20px;
+  padding: 0 14px 0 16px;
+  margin-right: 6px;
   background: #ff4d57;
   color: #ffffff;
   white-space: nowrap;
+  font-family: "Michroma", "Rajdhani", "Eurostile", "Segoe UI", system-ui, sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
 }
 
 .record-label i {
