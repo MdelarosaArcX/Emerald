@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import Hls from "hls.js";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import mediaStill from "../assets/reference-media.png";
 import settingsIcon from "../assets/icons/settings.png";
 
 const props = defineProps<{
@@ -18,6 +17,7 @@ const props = defineProps<{
   ffmpegPath?: string;
   isRecording?: boolean;
   timecode?: string;
+  playbackTimecode?: string;
   transportLabel?: string;
   durationLabel?: string;
   fpsLabel?: string;
@@ -31,6 +31,7 @@ const emit = defineEmits<{
   stop: [];
   configure: [];
   toggleSplitView: [];
+  playbackUpdate: [currentTime: number, duration: number];
 }>();
 
 const video = ref<HTMLVideoElement | null>(null);
@@ -72,10 +73,17 @@ async function loadSource(src: string) {
 
 function onPlaying() {
   hasPlayback.value = true;
+  emitPlaybackUpdate();
 }
 
 function onVideoError() {
   hasPlayback.value = false;
+}
+
+function emitPlaybackUpdate() {
+  if (!video.value) return;
+
+  emit("playbackUpdate", video.value.currentTime || 0, Number.isFinite(video.value.duration) ? video.value.duration : 0);
 }
 </script>
 
@@ -85,11 +93,15 @@ function onVideoError() {
     <div class="video-frame">
       <video
         ref="video"
-        autoplay
+        :autoplay="isCapture"
+        :controls="!isCapture"
         muted
         playsinline
-        :poster="isCapture ? undefined : mediaStill"
         @playing="onPlaying"
+        @timeupdate="emitPlaybackUpdate"
+        @loadedmetadata="emitPlaybackUpdate"
+        @durationchange="emitPlaybackUpdate"
+        @ended="emitPlaybackUpdate"
         @error="onVideoError"
       ></video>
       <button
@@ -113,8 +125,16 @@ function onVideoError() {
             <dd>{{ description || "OBS recordings saved by the backend will preview here." }}</dd>
           </div>
           <div>
+            <dt>Timecode</dt>
+            <dd>{{ playbackTimecode || timecode || "00:00:00:00" }}</dd>
+          </div>
+          <div>
             <dt>Details</dt>
             <dd>{{ detail || "--" }}</dd>
+          </div>
+          <div>
+            <dt>Duration</dt>
+            <dd>{{ durationLabel || "--" }}</dd>
           </div>
         </dl>
       </div>
@@ -203,10 +223,10 @@ function onVideoError() {
         <dt>Sample Frequency</dt>
         <dd>{{ sampleFrequencyLabel || "--" }}</dd>
       </div>
-      <div>
+      <!-- <div>
         <dt>FFmpeg Path</dt>
         <dd>{{ ffmpegPath || "--" }}</dd>
-      </div>
+      </div> -->
     </dl>
   </section>
 </template>

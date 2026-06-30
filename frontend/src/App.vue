@@ -9,6 +9,8 @@ const recorder = useRecorderStore();
 const refreshHandle = ref<number | null>(null);
 const clockHandle = ref<number | null>(null);
 const now = ref(Date.now());
+const libraryPlaybackSeconds = ref(0);
+const libraryPlaybackDuration = ref(0);
 const librarySplitView = ref(false);
 
 const statusLabel = computed(() => {
@@ -22,18 +24,29 @@ const libraryPreviewUrl = computed(() => selectedRecording.value?.url || "");
 const libraryDetail = computed(() => {
   const recording = selectedRecording.value;
   if (!recording) return "Waiting for recorded chunks";
-  return `${formatSize(recording.size)} | ${formatDate(recording.createdAt)}`;
+  return `${recording.timecode} | ${formatSize(recording.size)} | ${formatDate(recording.createdAt)}`;
+});
+const libraryTimecode = computed(() => {
+  const recording = selectedRecording.value;
+  if (!recording) return "00:00:00:00";
+  return recording.timecode || formatMachineTimecode(new Date(recording.createdAt).getTime(), parseFrameRate(recorder.settings.fps));
+});
+const libraryPlaybackTimecode = computed(() => {
+  const recording = selectedRecording.value;
+  if (!recording) return "00:00:00:00";
+
+  const recordingStart = new Date(recording.createdAt).getTime();
+  if (Number.isNaN(recordingStart)) return "00:00:00:00";
+
+  const elapsedMs = Math.max(0, libraryPlaybackSeconds.value * 1000);
+  return formatMachineTimecode(recordingStart + elapsedMs, parseFrameRate(recorder.settings.fps));
+});
+const libraryPlaybackDurationLabel = computed(() => {
+  if (!libraryPlaybackDuration.value) return "--";
+  return formatDurationTimecode(libraryPlaybackDuration.value);
 });
 const captureTimecode = computed(() => {
-  if (recorder.recorderStatus?.isRecording && recorder.recorderStatus.startedAt) {
-    return formatElapsedTimecode(recorder.recorderStatus.startedAt, now.value);
-  }
-
-  if (selectedRecording.value) {
-    return formatTimecode(recorder.recorderStatus?.segmentSeconds || recorder.settings.segmentSeconds);
-  }
-
-  return "00:00:00:00";
+  return formatMachineTimecode(now.value, parseFrameRate(recorder.settings.fps));
 });
 const captureTransportLabel = computed(() => {
   if (recorder.isRecording) return "Recording ...";
@@ -64,7 +77,7 @@ onMounted(async () => {
   refreshHandle.value = window.setInterval(() => recorder.refresh(), 3000);
   clockHandle.value = window.setInterval(() => {
     now.value = Date.now();
-  }, 1000);
+  }, 40);
 });
 
 onUnmounted(() => {
@@ -95,6 +108,11 @@ function toggleLibrarySplitView() {
   librarySplitView.value = !librarySplitView.value;
 }
 
+function handleLibraryPlaybackUpdate(currentTime: number, duration: number) {
+  libraryPlaybackSeconds.value = Math.max(0, Number(currentTime) || 0);
+  libraryPlaybackDuration.value = Math.max(0, Number(duration) || 0);
+}
+
 function formatSize(size: number) {
   if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(size / 1024))} KB`;
@@ -114,12 +132,27 @@ function formatTimecode(totalSeconds: number) {
   return `${pad(hours)}:${pad(minutes)}:${pad(remainder)}:00`;
 }
 
-function formatElapsedTimecode(startedAt: string, currentTime = Date.now()) {
-  const started = new Date(startedAt);
-  if (Number.isNaN(started.getTime())) return "00:00:00:00";
+function formatDurationTimecode(totalSeconds: number) {
+  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return `${pad(hours)}:${pad(minutes)}:${pad(remainder)}:00`;
+}
 
-  const elapsed = Math.max(0, Math.floor((currentTime - started.getTime()) / 1000));
-  return formatTimecode(elapsed);
+function formatMachineTimecode(currentTime = Date.now(), frameRate = 25) {
+  const date = new Date(currentTime);
+  if (Number.isNaN(date.getTime())) return "00:00:00:00";
+
+  const frameCount = Math.max(1, Math.round(frameRate));
+  const frames = Math.floor((date.getMilliseconds() / 1000) * frameCount);
+
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
+}
+
+function parseFrameRate(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 25;
 }
 
 function pad(value: number) {
@@ -153,7 +186,11 @@ function pad(value: number) {
           :title="selectedRecording?.fileName"
           description="Recorded OBS segment from backend storage."
           :detail="libraryDetail"
+          :timecode="libraryTimecode"
+          :duration-label="libraryPlaybackDurationLabel"
+          :playback-timecode="libraryPlaybackTimecode"
           :split-view="librarySplitView"
+          @playback-update="handleLibraryPlaybackUpdate"
           @toggle-split-view="toggleLibrarySplitView"
         />
         <CanvasWorkspace

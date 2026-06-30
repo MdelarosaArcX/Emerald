@@ -562,18 +562,21 @@ dd {
 
 .timecode {
   position: absolute;
-  top: -25px;
-  left: 0;
+  top: -33px;
+  left: 50%;
   z-index: 4;
-  height: 25px;
-  padding: 0 10px;
-  background: #ff4d57;
+  min-width: 160px;
+  padding: 0 12px;
+  transform: translateX(-50%);
   color: #ffffff;
   font-family: "Michroma", "Rajdhani", "Eurostile", "Segoe UI", system-ui, sans-serif;
   font-size: 0.907rem;
+  font-weight: 700;
   letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
-  line-height: 25px;
+  line-height: 1;
+  text-align: center;
+  text-shadow: 0 0 10px rgba(0, 0, 0, 0.45);
 }
 
 .record-label {

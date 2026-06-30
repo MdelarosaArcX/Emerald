@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import mediaStill from "../assets/reference-media.png";
 import type { RecordingSegment } from "../stores/recorder";
 
 const props = defineProps<{
@@ -23,11 +22,6 @@ function formatCreatedAt(createdAt: string) {
   const date = new Date(createdAt);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleString();
-}
-
-function useFallbackStill(event: Event) {
-  const image = event.target as HTMLImageElement;
-  image.src = mediaStill;
 }
 
 const selectedRecording = computed(() => {
@@ -65,9 +59,9 @@ const selectedRecording = computed(() => {
         :class="{ selected: recording.fileName === selectedFileName }"
         @click="emit('select', recording.fileName)"
       >
-        <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="useFallbackStill" />
+        <img :src="recording.thumbnailUrl" :alt="recording.fileName" />
         <h3>{{ recording.fileName }}</h3>
-        <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
+        <p>{{ recording.timecode }} | {{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
       </article>
     </div>
 
@@ -80,24 +74,27 @@ const selectedRecording = computed(() => {
           :class="{ selected: recording.fileName === selectedFileName }"
           @click="emit('select', recording.fileName)"
         >
-          <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="useFallbackStill" />
+          <img :src="recording.thumbnailUrl" :alt="recording.fileName" />
           <h3>{{ recording.fileName }}</h3>
-          <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
+          <p>{{ recording.timecode }} | {{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
         </article>
       </div>
 
       <aside class="clip-meta-panel" aria-label="Clip metadata">
         <div class="clip-meta-preview">
           <img
-            :src="selectedRecording?.thumbnailUrl || mediaStill"
+            :src="selectedRecording?.thumbnailUrl || ''"
             :alt="selectedRecording?.fileName || 'Selected clip'"
-            @error="useFallbackStill"
           />
         </div>
         <dl class="clip-meta-list">
           <div>
             <dt>File</dt>
             <dd>{{ selectedRecording?.fileName || "--" }}</dd>
+          </div>
+          <div>
+            <dt>Timecode</dt>
+            <dd>{{ selectedRecording?.timecode || "--" }}</dd>
           </div>
           <div>
             <dt>Created</dt>

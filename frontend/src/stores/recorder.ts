@@ -31,6 +31,7 @@ export type RecordingSegment = {
   thumbnailUrl: string;
   size: number;
   createdAt: string;
+  timecode: string;
 };
 
 type RecorderSettings = {
@@ -113,7 +114,10 @@ export const useRecorderStore = defineStore("recorder", {
       this.recorderStatus = recording;
       this.previewStatus = preview;
       this.ingestStatus = ingest;
-      this.recordings = recordings;
+      this.recordings = recordings.map((item) => ({
+        ...item,
+        timecode: formatMachineTimecode(new Date(item.createdAt).getTime(), parseFrameRate(this.settings.fps)),
+      }));
       if (!this.selectedRecordingFileName && recordings.length) {
         this.selectedRecordingFileName = recordings[0].fileName;
       }
@@ -175,4 +179,23 @@ async function api<T>(url: string, options: { method?: string; body?: unknown } 
   }
 
   return result as T;
+}
+
+function formatMachineTimecode(currentTime = Date.now(), frameRate = 25) {
+  const date = new Date(currentTime);
+  if (Number.isNaN(date.getTime())) return "00:00:00:00";
+
+  const frameCount = Math.max(1, Math.round(frameRate));
+  const frames = Math.floor((date.getMilliseconds() / 1000) * frameCount);
+
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
+}
+
+function parseFrameRate(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 25;
+}
+
+function pad(value: number) {
+  return String(Math.trunc(value)).padStart(2, "0");
 }

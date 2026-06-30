@@ -41,6 +41,7 @@ class ObsIngestService {
     this.cleanPreviewFiles();
 
     const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
+    const fps = parseFrameRate(request.fps);
     const container = normalizeContainer(request.container);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
@@ -56,7 +57,7 @@ class ObsIngestService {
       ...buildUdpInputArgs(inputUrl),
       "-i", inputUrl,
       "-map", "0",
-      "-c", "copy",
+      ...buildRecordingCodecArgs(segmentSeconds, fps),
       "-f", "segment",
       "-segment_time", String(segmentSeconds),
       "-reset_timestamps", "1",
@@ -350,4 +351,26 @@ function buildPreviewCodecArgs(isUdpInput) {
     "-sc_threshold", "0",
     "-c:a", "aac",
   ];
+}
+
+function buildRecordingCodecArgs(segmentSeconds, fps) {
+  const keyframeInterval = Math.max(1, Math.round(segmentSeconds * fps));
+
+  return [
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-tune", "zerolatency",
+    "-profile:v", "main",
+    "-pix_fmt", "yuv420p",
+    "-g", String(keyframeInterval),
+    "-keyint_min", String(keyframeInterval),
+    "-sc_threshold", "0",
+    "-force_key_frames", `expr:gte(t,n_forced*${segmentSeconds})`,
+    "-c:a", "aac",
+  ];
+}
+
+function parseFrameRate(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 25;
 }

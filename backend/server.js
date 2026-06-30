@@ -151,11 +151,17 @@ function registerRoutes(server) {
       };
     }));
 
-    return recordings
+    const sortedRecordings = recordings
       .filter((file) => file.size >= 0 && !file.fileName.startsWith("."))
       .sort((a, b) => b.lastWriteTime - a.lastWriteTime)
       .slice(0, 100)
       .map(({ lastWriteTime, ...file }) => file);
+
+    if (obsIngest.recordingStatus?.isRecording && sortedRecordings.length > 0) {
+      return sortedRecordings.slice(1);
+    }
+
+    return sortedRecordings;
   });
 
   server.get("/api/obs-recordings/:fileName/thumbnail", async (request, reply) => {

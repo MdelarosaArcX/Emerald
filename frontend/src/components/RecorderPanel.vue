@@ -159,7 +159,7 @@ function pad(value: number) {
     <ol class="segments recorder-advanced">
       <li v-for="recording in recorder.recordings" :key="recording.fileName">
         <a :href="recording.url" target="_blank" rel="noreferrer">{{ recording.fileName }}</a>
-        <span>{{ Math.round(recording.size / 1024) }} KB</span>
+        <span>{{ recording.timecode }} | {{ Math.round(recording.size / 1024) }} KB</span>
       </li>
     </ol>
   </aside>
