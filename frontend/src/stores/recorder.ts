@@ -17,6 +17,13 @@ type WebrtcStatus = {
   lastMessage: string | null;
 };
 
+type PreviewStatus = {
+  isRunning: boolean;
+  startedAt: string | null;
+  previewUrl: string;
+  lastMessage: string | null;
+};
+
 type IngestStatus = {
   isRunning: boolean;
   port: number;
@@ -70,6 +77,7 @@ export const useRecorderStore = defineStore("recorder", {
   state: () => ({
     settings: { ...defaultSettings },
     recorderStatus: null as RecorderStatus | null,
+    previewStatus: null as PreviewStatus | null,
     webrtcStatus: null as WebrtcStatus | null,
     ingestStatus: null as IngestStatus | null,
     recordings: [] as RecordingSegment[],
@@ -79,11 +87,9 @@ export const useRecorderStore = defineStore("recorder", {
   }),
   getters: {
     isRecording: (state) => Boolean(state.recorderStatus?.isRecording),
-    activePreviewUrl: (state) => state.webrtcStatus?.whepUrl || "",
+    activePreviewUrl: (state) => state.previewStatus?.previewUrl || "",
     selectedRecording: (state) => {
-      return state.recordings.find((recording) => recording.fileName === state.selectedRecordingFileName)
-        || state.recordings[0]
-        || null;
+      return state.recordings.find((recording) => recording.fileName === state.selectedRecordingFileName) || null;
     },
   },
   actions: {
@@ -104,27 +110,26 @@ export const useRecorderStore = defineStore("recorder", {
       localStorage.setItem("emerald.streaming.settings", JSON.stringify(this.settings));
     },
     async refresh() {
-      const [recording, webrtc, ingest, recordings] = await Promise.all([
+      const [recording, preview, webrtc, ingest, recordings] = await Promise.all([
         api<RecorderStatus>("/api/obs-recording/status"),
+        api<PreviewStatus>("/api/obs-preview/status"),
         api<WebrtcStatus>("/api/webrtc-preview/status"),
         api<IngestStatus>("/api/rtmp-ingest/status"),
         api<RecordingSegment[]>("/api/obs-recordings"),
       ]);
 
       this.recorderStatus = recording;
+      this.previewStatus = preview;
       this.webrtcStatus = webrtc;
       this.ingestStatus = ingest;
       this.recordings = recordings.map((item) => ({
         ...item,
         timecode: formatMachineTimecode(new Date(item.createdAt).getTime(), parseFrameRate(this.settings.fps)),
       }));
-      if (!this.selectedRecordingFileName && recordings.length) {
-        this.selectedRecordingFileName = recordings[0].fileName;
-      }
       if (this.selectedRecordingFileName && !recordings.some((item) => item.fileName === this.selectedRecordingFileName)) {
-        this.selectedRecordingFileName = recordings[0]?.fileName || "";
+        this.selectedRecordingFileName = "";
       }
-      this.message = recording.lastMessage || webrtc.lastMessage || ingest.lastMessage || "";
+      this.message = recording.lastMessage || preview.lastMessage || webrtc.lastMessage || ingest.lastMessage || "";
     },
     selectRecording(fileName: string) {
       this.selectedRecordingFileName = fileName;
@@ -133,19 +138,17 @@ export const useRecorderStore = defineStore("recorder", {
       this.isBusy = true;
       this.saveSettings();
 
-      let previewWarning = "";
-
       try {
-        this.webrtcStatus = await api<WebrtcStatus>("/api/webrtc-preview/start", {
+        this.previewStatus = await api<PreviewStatus>("/api/obs-preview/start", {
           method: "POST",
           body: {
-            inputUrl: getWebrtcInputUrl(this.settings.inputUrl),
+            inputUrl: this.settings.inputUrl,
             ffmpegPath: this.settings.ffmpegPath,
           },
         });
       } catch (error) {
-        this.webrtcStatus = null;
-        previewWarning = error instanceof Error ? error.message : "Unable to start WebRTC preview.";
+        this.previewStatus = null;
+        this.message = error instanceof Error ? error.message : "Unable to start preview.";
       }
 
       try {
@@ -153,9 +156,9 @@ export const useRecorderStore = defineStore("recorder", {
           method: "POST",
           body: this.settings,
         });
-        this.message = previewWarning
-          ? `Recording started. ${previewWarning}`
-          : "Preview and recording started.";
+        if (!this.message) {
+          this.message = "Preview and recording started.";
+        }
       } catch (error) {
         this.message = error instanceof Error ? error.message : "Unable to start recorder.";
       } finally {
@@ -168,6 +171,7 @@ export const useRecorderStore = defineStore("recorder", {
 
       try {
         this.recorderStatus = await api<RecorderStatus>("/api/obs-recording/stop", { method: "POST" });
+        await api("/api/obs-preview/stop", { method: "POST" });
         await api("/api/webrtc-preview/stop", { method: "POST" });
         this.message = "Recorder stopped.";
       } finally {
@@ -177,23 +181,6 @@ export const useRecorderStore = defineStore("recorder", {
     },
   },
 });
-
-// A unicast UDP socket only delivers to one listener. DeltacastCaptureService relays the
-// same H.264 stream to (recording port + 1) via Streaming:WebRtcRelayUrl in appsettings.json
-// so the WebRTC publisher doesn't fight the recorder ffmpeg for port 5000.
-function getWebrtcInputUrl(inputUrl: string): string {
-  if (inputUrl.toLowerCase().startsWith("udp://")) {
-    try {
-      const parsed = new URL(inputUrl);
-      parsed.port = String(Number(parsed.port || 5000) + 1);
-      return parsed.toString();
-    } catch {
-      return inputUrl;
-    }
-  }
-
-  return inputUrl;
-}
 
 async function api<T>(url: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const response = await fetch(url, {

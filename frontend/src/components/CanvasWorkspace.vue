@@ -27,7 +27,6 @@ function formatCreatedAt(createdAt: string) {
 const selectedRecording = computed(() => {
   return props.selectedRecording
     || props.recordings.find((recording) => recording.fileName === props.selectedFileName)
-    || props.recordings[0]
     || null;
 });
 </script>

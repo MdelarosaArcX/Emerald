@@ -15,7 +15,7 @@ const librarySplitView = ref(false);
 
 const statusLabel = computed(() => {
   if (recorder.isRecording) return "Recording";
-  if (recorder.webrtcStatus?.isRunning) return "Previewing";
+  if (recorder.previewStatus?.isRunning || recorder.webrtcStatus?.isRunning) return "Previewing";
   return "Idle";
 });
 
@@ -47,6 +47,9 @@ const libraryPlaybackDurationLabel = computed(() => {
 });
 const captureTimecode = computed(() => {
   return formatMachineTimecode(now.value, parseFrameRate(recorder.settings.fps));
+});
+const captureRecordingTimecode = computed(() => {
+  return formatElapsedTimecode(recorder.recorderStatus?.startedAt, now.value, parseFrameRate(recorder.settings.fps));
 });
 const captureTransportLabel = computed(() => {
   if (recorder.isRecording) return "Recording ...";
@@ -140,6 +143,22 @@ function formatDurationTimecode(totalSeconds: number) {
   return `${pad(hours)}:${pad(minutes)}:${pad(remainder)}:00`;
 }
 
+function formatElapsedTimecode(startedAt: string | null | undefined, currentTime = Date.now(), frameRate = 25) {
+  if (!startedAt) return "00:00:00:00";
+
+  const start = new Date(startedAt);
+  if (Number.isNaN(start.getTime())) return "00:00:00:00";
+
+  const elapsedMs = Math.max(0, currentTime - start.getTime());
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const frames = Math.floor(((elapsedMs % 1000) / 1000) * Math.max(1, Math.round(frameRate)));
+
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}:${pad(frames)}`;
+}
+
 function formatMachineTimecode(currentTime = Date.now(), frameRate = 25) {
   const date = new Date(currentTime);
   if (Number.isNaN(date.getTime())) return "00:00:00:00";
@@ -223,6 +242,7 @@ function pad(value: number) {
           :ffmpeg-path="captureFfmpegPath"
           :is-recording="recorder.isRecording"
           :is-busy="recorder.isBusy"
+          :playback-timecode="captureRecordingTimecode"
           @start="startCapture"
           @stop="stopCapture"
           @configure="configureCaptureSource"

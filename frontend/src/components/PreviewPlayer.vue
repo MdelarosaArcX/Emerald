@@ -199,7 +199,7 @@ function emitPlaybackUpdate() {
 
     <div class="transport" :class="{ recording: isCapture && isRecording }">
       <span v-if="isCapture && isRecording" class="record-label">
-        <i></i> {{ transportLabel || "Recording ..." }} {{ timecode || "00:00:00:00" }}
+        <i></i> {{ transportLabel || "Recording ..." }} {{ playbackTimecode || "00:00:00:00" }}
       </span>
       <button
         type="button"

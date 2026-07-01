@@ -10,6 +10,7 @@ const multipart = require("@fastify/multipart");
 const fastifyStatic = require("@fastify/static");
 
 const { normalizeFfmpegPath } = require("./services/obsRecordingService");
+const { ObsPreviewService } = require("./services/obsPreviewService");
 const { ObsIngestService } = require("./services/obsIngestService");
 const { RtmpIngestService } = require("./services/rtmpIngestService");
 const { WebrtcPreviewService } = require("./services/webrtcPreviewService");
@@ -32,6 +33,7 @@ const app = fastify({
 });
 
 const obsIngest = new ObsIngestService(recordingsPath);
+const obsPreview = new ObsPreviewService(webRoot);
 const rtmpIngest = new RtmpIngestService();
 const webrtcPreview = new WebrtcPreviewService();
 rtmpIngest.start();
@@ -183,6 +185,23 @@ function registerRoutes(server) {
 
   server.get("/api/rtmp-ingest/status", async () => rtmpIngest.status);
 
+  server.get("/api/obs-preview/status", async () => obsPreview.status);
+
+  server.post("/api/obs-preview/start", async (request, reply) => {
+    const localInputError = rtmpIngest.getLocalInputError(request.body?.inputUrl);
+    if (localInputError) {
+      return reply.code(400).send({ message: localInputError });
+    }
+
+    try {
+      return obsPreview.start(request.body || {});
+    } catch (error) {
+      return reply.code(400).send({ message: error.message });
+    }
+  });
+
+  server.post("/api/obs-preview/stop", async () => obsPreview.stop());
+
   server.get("/api/webrtc-preview/status", async () => webrtcPreview.status);
 
   server.post("/api/webrtc-preview/start", async (request, reply) => {
@@ -217,6 +236,7 @@ async function start() {
 
 const shutdown = () => {
   obsIngest.stop();
+  obsPreview.stop();
   rtmpIngest.stop();
   webrtcPreview.stopAll();
   runtimeServices.close()
