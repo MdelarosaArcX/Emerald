@@ -78,11 +78,13 @@ function pad(value: number) {
         <span>Format</span>
         <span class="format-controls">
           <select v-model="recorder.settings.container" class="compact-select auto-select">
-            <option value="mp4">Auto detect - MP4</option>
+            <option value="mov">MOV</option>
+            <option value="mp4">MP4</option>
             <option value="mkv">Auto detect - MKV</option>
             <option value="ts">Auto detect - MPEG-TS</option>
           </select>
           <select v-model="recorder.settings.videoCodec" class="compact-select auto-select">
+            <option value="ProRes 422">ProRes 422</option>
             <option value="H.264">Auto detect - H.264</option>
             <option value="H.265">Auto detect - H.265</option>
           </select>

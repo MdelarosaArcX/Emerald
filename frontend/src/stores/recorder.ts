@@ -55,9 +55,9 @@ const defaultSettings: RecorderSettings = {
   title: "Deltacast live preview",
   description: "UDP input recording from the Deltacast bridge.",
   fps: "25",
-  container: "mp4",
+  container: "mov",
   segmentSeconds: 120,
-  videoCodec: "H.264",
+  videoCodec: "ProRes 422",
   audioCodec: "AAC",
   videoBitrate: "5000 kbps",
   audioBitrate: "320 kbps",
@@ -94,6 +94,11 @@ export const useRecorderStore = defineStore("recorder", {
         this.settings = { ...defaultSettings, ...JSON.parse(saved) };
         if (this.settings.inputUrl === "udp://127.0.0.1:5000") {
           this.settings.inputUrl = defaultSettings.inputUrl;
+        }
+        // Migrate old H.264/mp4 defaults to ProRes 422/mov
+        if (this.settings.videoCodec === "H.264" && this.settings.container === "mp4") {
+          this.settings.videoCodec = "ProRes 422";
+          this.settings.container = "mov";
         }
       } catch {
         localStorage.removeItem("emerald.streaming.settings");

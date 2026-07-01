@@ -29,10 +29,12 @@ class ObsIngestService {
     }
 
     const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
-    const container = normalizeContainer(request.container);
+    const container = normalizeContainer(request.container, request.videoCodec);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
     const outputPattern = path.join(this.recordingsPath, `obs-%Y%m%d-%H%M%S.${container.extension}`);
+
+    const videoArgs = buildVideoArgs(request.videoCodec);
 
     const args = [
       "-hide_banner",
@@ -40,7 +42,7 @@ class ObsIngestService {
       ...buildUdpInputArgs(inputUrl),
       "-i", inputUrl,
       "-map", "0",
-      "-c", "copy",
+      ...videoArgs,
       "-f", "segment",
       "-segment_time", String(segmentSeconds),
       "-reset_timestamps", "1",
@@ -133,8 +135,14 @@ module.exports = {
   ObsIngestService,
 };
 
-function normalizeContainer(container) {
+function normalizeContainer(container, videoCodec) {
+  if (isProRes(videoCodec)) {
+    return { extension: "mov", format: "mov" };
+  }
+
   switch (String(container || "").trim().toLowerCase()) {
+    case "mov":
+      return { extension: "mov", format: "mov" };
     case "mkv":
     case "matroska":
       return { extension: "mkv", format: "matroska" };
@@ -144,6 +152,17 @@ function normalizeContainer(container) {
     default:
       return { extension: "mp4", format: "mp4" };
   }
+}
+
+function buildVideoArgs(videoCodec) {
+  if (isProRes(videoCodec)) {
+    return ["-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le", "-an"];
+  }
+  return ["-c", "copy"];
+}
+
+function isProRes(videoCodec) {
+  return /prores/i.test(String(videoCodec || ""));
 }
 
 function clamp(value, min, max) {
@@ -244,10 +263,11 @@ function buildUdpInputArgs(inputUrl) {
     return [];
   }
 
+  // Declare MPEG-TS so FFmpeg skips format probing — the C# Deltacast bridge
+  // always outputs H.264 MPEG-TS, so probing adds latency with no benefit.
   return [
+    "-f", "mpegts",
     "-fflags", "+discardcorrupt",
-    "-probesize", "50M",
-    "-analyzeduration", "50M",
     "-max_delay", "200000",
   ];
 }

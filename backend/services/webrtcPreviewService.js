@@ -40,7 +40,8 @@ class WebrtcPreviewService {
     }
 
     this.ensureMediaMtxRunning();
-    await this.waitForMediaMtxReady();
+    await this.waitForMediaMtxReady(this.rtspPort);
+    await this.waitForMediaMtxReady(this.whepPort);
 
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
@@ -49,17 +50,17 @@ class WebrtcPreviewService {
 
     const args = [
       "-hide_banner",
-      "-loglevel", "warning",
-      ...(isUdpInput ? ["-fflags", "+discardcorrupt", "-probesize", "50M", "-analyzeduration", "50M", "-max_delay", "200000"] : []),
+      // info-level logs flow into this.status.lastMessage so startup failures are visible
+      // in the frontend message field even if they don't reach warning severity.
+      "-loglevel", "info",
+      // Declare the input format so FFmpeg skips probing and publishes within a second.
+      ...(isUdpInput ? ["-f", "mpegts", "-fflags", "+discardcorrupt", "-max_delay", "200000"] : []),
       "-i", inputUrl,
       "-map", "0:v:0",
       "-an",
       "-c:v", "copy",
-      "-fflags", "nobuffer",
-      "-flags", "low_delay",
-      // UDP, not TCP: TCP would retransmit/reorder on loss, queueing already-encoded
-      // frames behind a stall - latency climbs continuously instead of staying flat.
-      "-rtsp_transport", "udp",
+      // TCP avoids dynamic UDP RTP port negotiation which can fail silently on Windows.
+      "-rtsp_transport", "tcp",
       "-f", "rtsp",
       rtspUrl,
     ];
@@ -156,12 +157,12 @@ class WebrtcPreviewService {
     this.mediaMtxProcess = mediaMtxProcess;
   }
 
-  waitForMediaMtxReady(timeoutMs = 5000) {
+  waitForMediaMtxReady(port, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
       const deadline = Date.now() + timeoutMs;
 
       const attempt = () => {
-        const socket = net.connect({ host: "127.0.0.1", port: this.rtspPort });
+        const socket = net.connect({ host: "127.0.0.1", port });
 
         socket.once("connect", () => {
           socket.destroy();
@@ -172,7 +173,7 @@ class WebrtcPreviewService {
           socket.destroy();
 
           if (Date.now() >= deadline) {
-            reject(new Error(`MediaMTX did not start listening on RTSP port ${this.rtspPort} in time.`));
+            reject(new Error(`MediaMTX did not start listening on port ${port} in time.`));
             return;
           }
 

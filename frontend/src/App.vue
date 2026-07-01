@@ -11,6 +11,8 @@ const clockHandle = ref<number | null>(null);
 const now = ref(Date.now());
 const librarySplitView = ref(false);
 
+const configuredFps = computed(() => Math.max(1, Number(recorder.settings.fps) || 25));
+
 const statusLabel = computed(() => {
   if (recorder.isRecording) return "Recording";
   if (recorder.webrtcStatus?.isRunning) return "Previewing";
@@ -18,7 +20,22 @@ const statusLabel = computed(() => {
 });
 
 const selectedRecording = computed(() => recorder.selectedRecording);
-const libraryPreviewUrl = computed(() => selectedRecording.value?.url || "");
+
+// ProRes 422 MOV is not browser-decodable — don't pass it to the video element.
+const isBrowserPlayable = (fileName: string) => !/\.mov$/i.test(fileName);
+
+const libraryPreviewUrl = computed(() => {
+  const recording = selectedRecording.value;
+  if (!recording || !isBrowserPlayable(recording.fileName)) return "";
+  return recording.url;
+});
+const libraryDescription = computed(() => {
+  const recording = selectedRecording.value;
+  if (recording && !isBrowserPlayable(recording.fileName)) {
+    return "ProRes 422 MOV — not browser-playable. Download the file to view in a compatible player.";
+  }
+  return "Recorded OBS segment from backend storage.";
+});
 const libraryDetail = computed(() => {
   const recording = selectedRecording.value;
   if (!recording) return "Waiting for recorded chunks";
@@ -26,7 +43,7 @@ const libraryDetail = computed(() => {
 });
 const captureTimecode = computed(() => {
   if (recorder.recorderStatus?.isRecording && recorder.recorderStatus.startedAt) {
-    return formatElapsedTimecode(recorder.recorderStatus.startedAt, now.value);
+    return formatElapsedTimecode(recorder.recorderStatus.startedAt, now.value, configuredFps.value);
   }
 
   if (selectedRecording.value) {
@@ -64,7 +81,7 @@ onMounted(async () => {
   refreshHandle.value = window.setInterval(() => recorder.refresh(), 3000);
   clockHandle.value = window.setInterval(() => {
     now.value = Date.now();
-  }, 1000);
+  }, Math.round(1000 / configuredFps.value));
 });
 
 onUnmounted(() => {
@@ -114,12 +131,18 @@ function formatTimecode(totalSeconds: number) {
   return `${pad(hours)}:${pad(minutes)}:${pad(remainder)}:00`;
 }
 
-function formatElapsedTimecode(startedAt: string, currentTime = Date.now()) {
+function formatElapsedTimecode(startedAt: string, currentTime = Date.now(), fps = 25) {
   const started = new Date(startedAt);
   if (Number.isNaN(started.getTime())) return "00:00:00:00";
 
-  const elapsed = Math.max(0, Math.floor((currentTime - started.getTime()) / 1000));
-  return formatTimecode(elapsed);
+  const elapsedMs = Math.max(0, currentTime - started.getTime());
+  const totalFrames = Math.floor((elapsedMs / 1000) * fps);
+  const frames = totalFrames % fps;
+  const totalSecs = Math.floor(totalFrames / fps);
+  const ss = totalSecs % 60;
+  const mm = Math.floor(totalSecs / 60) % 60;
+  const hh = Math.floor(totalSecs / 3600);
+  return `${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(frames)}`;
 }
 
 function pad(value: number) {
@@ -149,9 +172,10 @@ function pad(value: number) {
         <span class="deck-tab">Media Browser</span>
         <PreviewPlayer
           :src="libraryPreviewUrl"
+          :fps="configuredFps"
           variant="library"
           :title="selectedRecording?.fileName"
-          description="Recorded OBS segment from backend storage."
+          :description="libraryDescription"
           :detail="libraryDetail"
           :split-view="librarySplitView"
           @toggle-split-view="toggleLibrarySplitView"
@@ -169,6 +193,7 @@ function pad(value: number) {
         <span class="deck-tab">Capture Deck</span>
         <PreviewPlayer
           :src="recorder.activePreviewUrl"
+          :fps="configuredFps"
           variant="capture"
           :title="captureTitle"
           :description="captureDescription"

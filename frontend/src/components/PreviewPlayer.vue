@@ -5,6 +5,7 @@ import settingsIcon from "../assets/icons/settings.png";
 
 const props = defineProps<{
   src: string;
+  fps?: number;
   variant?: "library" | "capture";
   title?: string;
   description?: string;
@@ -34,26 +35,34 @@ const emit = defineEmits<{
 
 const video = ref<HTMLVideoElement | null>(null);
 const hasPlayback = ref(false);
+const internalTimecode = ref("00:00:00:00");
 
 let pc: RTCPeerConnection | null = null;
 let webrtcSessionUrl: string | null = null;
 let abortController: AbortController | null = null;
+let rafId: number | null = null;
 
 const mode = computed(() => props.variant || "library");
 const isCapture = computed(() => mode.value === "capture");
 const showSourcePrompt = computed(() => isCapture.value && !props.isRecording && !hasPlayback.value);
+const displayTimecode = computed(() =>
+  hasPlayback.value ? internalTimecode.value : (props.timecode || "00:00:00:00"),
+);
 
 watch(() => props.src, loadSource, { immediate: true });
 
 onBeforeUnmount(() => {
   teardownWebrtc();
+  stopTimecodeLoop();
 });
 
 async function loadSource(src: string) {
   if (!video.value) return;
 
   hasPlayback.value = false;
+  internalTimecode.value = "00:00:00:00";
   teardownWebrtc();
+  stopTimecodeLoop();
   video.value.srcObject = null;
   video.value.removeAttribute("src");
   video.value.load();
@@ -65,6 +74,40 @@ async function loadSource(src: string) {
   } else {
     video.value.src = src;
   }
+}
+
+function startTimecodeLoop() {
+  if (rafId !== null) return;
+
+  const tick = () => {
+    if (video.value) {
+      internalTimecode.value = toTimecode(video.value.currentTime, props.fps ?? 25);
+    }
+    rafId = requestAnimationFrame(tick);
+  };
+
+  rafId = requestAnimationFrame(tick);
+}
+
+function stopTimecodeLoop() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+function toTimecode(seconds: number, fps: number): string {
+  const totalFrames = Math.floor(seconds * fps);
+  const frames = totalFrames % fps;
+  const totalSecs = Math.floor(totalFrames / fps);
+  const ss = totalSecs % 60;
+  const mm = Math.floor(totalSecs / 60) % 60;
+  const hh = Math.floor(totalSecs / 3600);
+  return `${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(frames)}`;
+}
+
+function pad(n: number) {
+  return String(Math.trunc(n)).padStart(2, "0");
 }
 
 function teardownWebrtc() {
@@ -100,7 +143,7 @@ async function connectWebrtc(whepUrl: string) {
   const offer = await connection.createOffer();
   await connection.setLocalDescription(offer);
 
-  for (let attempt = 0; attempt < 20; attempt++) {
+  for (let attempt = 0; attempt < 40; attempt++) {
     if (ac.signal.aborted) return;
 
     let response: Response | null = null;
@@ -112,7 +155,11 @@ async function connectWebrtc(whepUrl: string) {
         signal: ac.signal,
       });
     } catch {
-      return;
+      // Aborted means the component unmounted — stop retrying
+      if (ac.signal.aborted) return;
+      // Network error (connection refused, WHEP not ready yet) — retry
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      continue;
     }
 
     if (response.ok) {
@@ -129,16 +176,27 @@ async function connectWebrtc(whepUrl: string) {
 
 function onPlaying() {
   hasPlayback.value = true;
+  startTimecodeLoop();
+}
+
+function onPause() {
+  stopTimecodeLoop();
+}
+
+function onEnded() {
+  hasPlayback.value = false;
+  stopTimecodeLoop();
 }
 
 function onVideoError() {
   hasPlayback.value = false;
+  stopTimecodeLoop();
 }
 </script>
 
 <template>
   <section class="preview-panel" :class="mode">
-    <div v-if="isCapture" class="timecode">{{ timecode || "00:00:00:00" }}</div>
+    <div class="timecode">{{ displayTimecode }}</div>
     <div class="video-frame">
       <video
         ref="video"
@@ -147,6 +205,8 @@ function onVideoError() {
         playsinline
         :poster="isCapture ? undefined : mediaStill"
         @playing="onPlaying"
+        @pause="onPause"
+        @ended="onEnded"
         @error="onVideoError"
       ></video>
       <button
@@ -246,7 +306,7 @@ function onVideoError() {
       </div>
       <div>
         <dt>Format</dt>
-        <dd>{{ formatLabel || "MP4 | H.264 | AAC" }}</dd>
+        <dd>{{ formatLabel || "MOV | ProRes 422" }}</dd>
       </div>
       <div>
         <dt>Video Bitrate</dt>
