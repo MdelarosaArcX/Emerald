@@ -57,6 +57,16 @@ async function registerPlugins(server) {
     root: webRoot,
     prefix: "/",
     decorateReply: false,
+    setHeaders: (response, filePath) => {
+      if (filePath.toLowerCase().endsWith(".m3u8")) {
+        response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        response.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      }
+
+      if (filePath.toLowerCase().endsWith(".ts")) {
+        response.setHeader("Content-Type", "video/mp2t");
+      }
+    },
   });
   await server.register(fastifyStatic, {
     root: recordingsPath,

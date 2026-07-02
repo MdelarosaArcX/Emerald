@@ -17,13 +17,6 @@ type WebrtcStatus = {
   lastMessage: string | null;
 };
 
-type PreviewStatus = {
-  isRunning: boolean;
-  startedAt: string | null;
-  previewUrl: string;
-  lastMessage: string | null;
-};
-
 type IngestStatus = {
   isRunning: boolean;
   port: number;
@@ -77,7 +70,6 @@ export const useRecorderStore = defineStore("recorder", {
   state: () => ({
     settings: { ...defaultSettings },
     recorderStatus: null as RecorderStatus | null,
-    previewStatus: null as PreviewStatus | null,
     webrtcStatus: null as WebrtcStatus | null,
     ingestStatus: null as IngestStatus | null,
     recordings: [] as RecordingSegment[],
@@ -87,7 +79,7 @@ export const useRecorderStore = defineStore("recorder", {
   }),
   getters: {
     isRecording: (state) => Boolean(state.recorderStatus?.isRecording),
-    activePreviewUrl: (state) => state.previewStatus?.previewUrl || "",
+    activePreviewUrl: (state) => (state.webrtcStatus?.isRunning ? state.webrtcStatus.whepUrl : ""),
     selectedRecording: (state) => {
       return state.recordings.find((recording) => recording.fileName === state.selectedRecordingFileName) || null;
     },
@@ -110,16 +102,14 @@ export const useRecorderStore = defineStore("recorder", {
       localStorage.setItem("emerald.streaming.settings", JSON.stringify(this.settings));
     },
     async refresh() {
-      const [recording, preview, webrtc, ingest, recordings] = await Promise.all([
+      const [recording, webrtc, ingest, recordings] = await Promise.all([
         api<RecorderStatus>("/api/obs-recording/status"),
-        api<PreviewStatus>("/api/obs-preview/status"),
         api<WebrtcStatus>("/api/webrtc-preview/status"),
         api<IngestStatus>("/api/rtmp-ingest/status"),
         api<RecordingSegment[]>("/api/obs-recordings"),
       ]);
 
       this.recorderStatus = recording;
-      this.previewStatus = preview;
       this.webrtcStatus = webrtc;
       this.ingestStatus = ingest;
       this.recordings = recordings.map((item) => ({
@@ -129,7 +119,7 @@ export const useRecorderStore = defineStore("recorder", {
       if (this.selectedRecordingFileName && !recordings.some((item) => item.fileName === this.selectedRecordingFileName)) {
         this.selectedRecordingFileName = "";
       }
-      this.message = recording.lastMessage || preview.lastMessage || webrtc.lastMessage || ingest.lastMessage || "";
+      this.message = recording.lastMessage || webrtc.lastMessage || ingest.lastMessage || "";
     },
     selectRecording(fileName: string) {
       this.selectedRecordingFileName = fileName;
@@ -139,15 +129,15 @@ export const useRecorderStore = defineStore("recorder", {
       this.saveSettings();
 
       try {
-        this.previewStatus = await api<PreviewStatus>("/api/obs-preview/start", {
+        this.webrtcStatus = await api<WebrtcStatus>("/api/webrtc-preview/start", {
           method: "POST",
           body: {
-            inputUrl: this.settings.inputUrl,
+            inputUrl: getPreviewInputUrl(this.settings.inputUrl),
             ffmpegPath: this.settings.ffmpegPath,
           },
         });
       } catch (error) {
-        this.previewStatus = null;
+        this.webrtcStatus = null;
         this.message = error instanceof Error ? error.message : "Unable to start preview.";
       }
 
@@ -171,7 +161,6 @@ export const useRecorderStore = defineStore("recorder", {
 
       try {
         this.recorderStatus = await api<RecorderStatus>("/api/obs-recording/stop", { method: "POST" });
-        await api("/api/obs-preview/stop", { method: "POST" });
         await api("/api/webrtc-preview/stop", { method: "POST" });
         this.message = "Recorder stopped.";
       } finally {
@@ -181,6 +170,24 @@ export const useRecorderStore = defineStore("recorder", {
     },
   },
 });
+
+// A unicast UDP socket only delivers to one listener. The Deltacast capture bridge relays the
+// same H.264 stream to (recording port + 1) via Streaming:WebRtcRelayUrl in its appsettings.json
+// specifically so the WebRTC preview's FFmpeg publisher doesn't fight the recorder FFmpeg for
+// the same UDP port.
+function getPreviewInputUrl(inputUrl: string): string {
+  if (inputUrl.toLowerCase().startsWith("udp://")) {
+    try {
+      const parsed = new URL(inputUrl);
+      parsed.port = String(Number(parsed.port || 5000) + 1);
+      return parsed.toString();
+    } catch {
+      return inputUrl;
+    }
+  }
+
+  return inputUrl;
+}
 
 async function api<T>(url: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const response = await fetch(url, {

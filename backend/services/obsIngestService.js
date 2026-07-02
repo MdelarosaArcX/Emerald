@@ -253,26 +253,6 @@ function buildUdpInputArgs(inputUrl) {
   ];
 }
 
-function buildPreviewCodecArgs(isUdpInput) {
-  if (isUdpInput) {
-    return [
-      "-c", "copy",
-    ];
-  }
-
-  return [
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-tune", "zerolatency",
-    "-profile:v", "main",
-    "-pix_fmt", "yuv420p",
-    "-g", "60",
-    "-keyint_min", "60",
-    "-sc_threshold", "0",
-    "-c:a", "aac",
-  ];
-}
-
 function buildRecordingCodecArgs(segmentSeconds, fps) {
   const keyframeInterval = Math.max(1, Math.round(segmentSeconds * fps));
 

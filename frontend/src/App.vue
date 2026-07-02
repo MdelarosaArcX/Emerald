@@ -15,7 +15,7 @@ const librarySplitView = ref(false);
 
 const statusLabel = computed(() => {
   if (recorder.isRecording) return "Recording";
-  if (recorder.previewStatus?.isRunning || recorder.webrtcStatus?.isRunning) return "Previewing";
+  if (recorder.webrtcStatus?.isRunning) return "Previewing";
   return "Idle";
 });
 
