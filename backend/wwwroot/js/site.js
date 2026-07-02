@@ -74,7 +74,7 @@ const loadSettings = () => {
 
     obsInputUrl.value = settings.inputUrl || obsInputUrl.value;
     recordingContainer.value = settings.container || "mp4";
-    segmentSeconds.value = settings.segmentSeconds || "120";
+    segmentSeconds.value = settings.segmentSeconds || "300";
     ffmpegPath.value = settings.ffmpegPath || "ffmpeg";
     segmentLength.textContent = `${segmentSeconds.value} seconds`;
   } catch {

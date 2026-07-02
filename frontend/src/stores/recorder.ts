@@ -7,6 +7,8 @@ type RecorderStatus = {
   outputPattern: string | null;
   segmentSeconds: number;
   container: string;
+  backupPath: string | null;
+  backupAvailable: boolean;
   lastMessage: string | null;
 };
 
@@ -47,6 +49,7 @@ type RecorderSettings = {
   audioBitrate: string;
   audioSampleFrequency: string;
   ffmpegPath: string;
+  backupPath: string;
 };
 
 const defaultSettings: RecorderSettings = {
@@ -56,13 +59,14 @@ const defaultSettings: RecorderSettings = {
   description: "UDP input recording from the Deltacast bridge.",
   fps: "25",
   container: "mov",
-  segmentSeconds: 120,
+  segmentSeconds: 300,
   videoCodec: "ProRes 422",
   audioCodec: "AAC",
   videoBitrate: "5000 kbps",
   audioBitrate: "320 kbps",
   audioSampleFrequency: "48 kHz",
   ffmpegPath: "ffmpeg",
+  backupPath: "E:\\",
 };
 
 export const useRecorderStore = defineStore("recorder", {

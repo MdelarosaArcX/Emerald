@@ -137,7 +137,7 @@ function registerRoutes(server) {
     }));
 
     return recordings
-      .filter((file) => file.size >= 0 && !file.fileName.startsWith("."))
+      .filter((file) => file.size >= 0 && !file.fileName.startsWith(".") && !/\.mov$/i.test(file.fileName))
       .sort((a, b) => b.lastWriteTime - a.lastWriteTime)
       .slice(0, 100)
       .map(({ lastWriteTime, ...file }) => file);

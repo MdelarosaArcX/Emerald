@@ -41,17 +41,7 @@ const libraryDetail = computed(() => {
   if (!recording) return "Waiting for recorded chunks";
   return `${formatSize(recording.size)} | ${formatDate(recording.createdAt)}`;
 });
-const captureTimecode = computed(() => {
-  if (recorder.recorderStatus?.isRecording && recorder.recorderStatus.startedAt) {
-    return formatElapsedTimecode(recorder.recorderStatus.startedAt, now.value, configuredFps.value);
-  }
-
-  if (selectedRecording.value) {
-    return formatTimecode(recorder.recorderStatus?.segmentSeconds || recorder.settings.segmentSeconds);
-  }
-
-  return "00:00:00:00";
-});
+const captureTimecode = computed(() => formatWallClockTimecode(now.value, configuredFps.value));
 const captureTransportLabel = computed(() => {
   if (recorder.isRecording) return "Recording ...";
   if (selectedRecording.value) return selectedRecording.value.fileName;
@@ -64,10 +54,7 @@ const captureDetail = computed(() => {
   const segmentSeconds = status?.segmentSeconds || recorder.settings.segmentSeconds;
   return formatTimecode(segmentSeconds);
 });
-const captureFormat = computed(() => {
-  const container = recorder.recorderStatus?.container?.toUpperCase() || recorder.settings.container.toUpperCase();
-  return `${container} | ${recorder.settings.videoCodec} | ${recorder.settings.audioCodec}`;
-});
+const captureFormat = computed(() => "MP4 | H.264 (playout) + MOV | ProRes 422 (archival)");
 const captureFps = computed(() => `${recorder.settings.fps} FPS`);
 const captureVideoBitrate = computed(() => recorder.settings.videoBitrate);
 const captureAudioBitrate = computed(() => recorder.settings.audioBitrate);
@@ -131,18 +118,10 @@ function formatTimecode(totalSeconds: number) {
   return `${pad(hours)}:${pad(minutes)}:${pad(remainder)}:00`;
 }
 
-function formatElapsedTimecode(startedAt: string, currentTime = Date.now(), fps = 25) {
-  const started = new Date(startedAt);
-  if (Number.isNaN(started.getTime())) return "00:00:00:00";
-
-  const elapsedMs = Math.max(0, currentTime - started.getTime());
-  const totalFrames = Math.floor((elapsedMs / 1000) * fps);
-  const frames = totalFrames % fps;
-  const totalSecs = Math.floor(totalFrames / fps);
-  const ss = totalSecs % 60;
-  const mm = Math.floor(totalSecs / 60) % 60;
-  const hh = Math.floor(totalSecs / 3600);
-  return `${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(frames)}`;
+function formatWallClockTimecode(currentTime: number, fps: number) {
+  const date = new Date(currentTime);
+  const frames = Math.floor((date.getMilliseconds() / 1000) * fps);
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
 }
 
 function pad(value: number) {
@@ -177,6 +156,7 @@ function pad(value: number) {
           :title="selectedRecording?.fileName"
           :description="libraryDescription"
           :detail="libraryDetail"
+          :start-at="selectedRecording?.createdAt"
           :split-view="librarySplitView"
           @toggle-split-view="toggleLibrarySplitView"
         />

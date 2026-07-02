@@ -24,6 +24,7 @@ const props = defineProps<{
   formatLabel?: string;
   isBusy?: boolean;
   splitView?: boolean;
+  startAt?: string;
 }>();
 
 const emit = defineEmits<{
@@ -35,6 +36,7 @@ const emit = defineEmits<{
 
 const video = ref<HTMLVideoElement | null>(null);
 const hasPlayback = ref(false);
+const isPaused = ref(true);
 const internalTimecode = ref("00:00:00:00");
 
 let pc: RTCPeerConnection | null = null;
@@ -45,9 +47,16 @@ let rafId: number | null = null;
 const mode = computed(() => props.variant || "library");
 const isCapture = computed(() => mode.value === "capture");
 const showSourcePrompt = computed(() => isCapture.value && !props.isRecording && !hasPlayback.value);
-const displayTimecode = computed(() =>
-  hasPlayback.value ? internalTimecode.value : (props.timecode || "00:00:00:00"),
-);
+const showPlayIcon = computed(() => (isCapture.value ? !props.isRecording : isPaused.value));
+const displayTimecode = computed(() => {
+  // Capture is a live wall clock driven by the parent (App.vue) — the video
+  // element's own currentTime resets to 0 whenever the WebRTC preview reconnects,
+  // so it must never be used as the source of truth for capture's timecode.
+  if (isCapture.value) return props.timecode || "00:00:00:00";
+  if (hasPlayback.value) return internalTimecode.value;
+  if (props.startAt) return toWallClockTimecode(new Date(props.startAt).getTime(), props.fps ?? 25);
+  return props.timecode || "00:00:00:00";
+});
 
 watch(() => props.src, loadSource, { immediate: true });
 
@@ -60,6 +69,7 @@ async function loadSource(src: string) {
   if (!video.value) return;
 
   hasPlayback.value = false;
+  isPaused.value = true;
   internalTimecode.value = "00:00:00:00";
   teardownWebrtc();
   stopTimecodeLoop();
@@ -77,11 +87,16 @@ async function loadSource(src: string) {
 }
 
 function startTimecodeLoop() {
-  if (rafId !== null) return;
+  if (rafId !== null || isCapture.value) return;
 
   const tick = () => {
     if (video.value) {
-      internalTimecode.value = toTimecode(video.value.currentTime, props.fps ?? 25);
+      if (props.startAt) {
+        const startedMs = new Date(props.startAt).getTime();
+        internalTimecode.value = toWallClockTimecode(startedMs + video.value.currentTime * 1000, props.fps ?? 25);
+      } else {
+        internalTimecode.value = toTimecode(video.value.currentTime, props.fps ?? 25);
+      }
     }
     rafId = requestAnimationFrame(tick);
   };
@@ -104,6 +119,14 @@ function toTimecode(seconds: number, fps: number): string {
   const mm = Math.floor(totalSecs / 60) % 60;
   const hh = Math.floor(totalSecs / 3600);
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(frames)}`;
+}
+
+function toWallClockTimecode(ms: number, fps: number): string {
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "00:00:00:00";
+
+  const frames = Math.floor((date.getMilliseconds() / 1000) * fps);
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
 }
 
 function pad(n: number) {
@@ -176,21 +199,40 @@ async function connectWebrtc(whepUrl: string) {
 
 function onPlaying() {
   hasPlayback.value = true;
+  isPaused.value = false;
   startTimecodeLoop();
 }
 
 function onPause() {
+  isPaused.value = true;
   stopTimecodeLoop();
 }
 
 function onEnded() {
   hasPlayback.value = false;
+  isPaused.value = true;
   stopTimecodeLoop();
 }
 
 function onVideoError() {
   hasPlayback.value = false;
+  isPaused.value = true;
   stopTimecodeLoop();
+}
+
+function togglePlayback() {
+  if (isCapture.value) {
+    if (!props.isRecording) emit("start");
+    return;
+  }
+
+  if (!video.value || !props.src) return;
+
+  if (video.value.paused) {
+    video.value.play();
+  } else {
+    video.value.pause();
+  }
 }
 </script>
 
@@ -200,7 +242,7 @@ function onVideoError() {
     <div class="video-frame">
       <video
         ref="video"
-        autoplay
+        :autoplay="isCapture"
         muted
         playsinline
         :poster="isCapture ? undefined : mediaStill"
@@ -244,10 +286,10 @@ function onVideoError() {
       <button
         type="button"
         class="pause active"
-        :class="{ play: isCapture && !isRecording }"
-        :disabled="isCapture && (isBusy || isRecording)"
-        :aria-label="isCapture ? 'Start encoding' : 'Pause'"
-        @click="isCapture && !isRecording ? emit('start') : undefined"
+        :class="{ play: showPlayIcon }"
+        :disabled="isCapture ? (isBusy || isRecording) : !props.src"
+        :aria-label="isCapture ? 'Start encoding' : (isPaused ? 'Play' : 'Pause')"
+        @click="togglePlayback"
       ></button>
       <button
         type="button"

@@ -4,6 +4,8 @@ const { spawn } = require("node:child_process");
 const { normalizeFfmpegPath } = require("./obsRecordingService");
 const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
 
+const BACKUP_SYNC_INTERVAL_MS = 5000;
+
 class ObsIngestService {
   constructor(recordingsPath) {
     this.recordingsPath = recordingsPath;
@@ -13,10 +15,20 @@ class ObsIngestService {
       startedAt: null,
       inputUrl: null,
       outputPattern: null,
-      segmentSeconds: 120,
+      segmentSeconds: 300,
       container: "mp4",
+      backupPath: null,
+      backupAvailable: false,
       lastMessage: null,
     };
+    this.backupSyncHandle = null;
+    this.backupSessionStamp = null;
+    this.backupDir = null;
+    this.copiedBackupSegments = new Set();
+    // Tracks whether the underlying FFmpeg OS process has actually exited — distinct from
+    // `this.process` being nulled, which can happen before the process finishes flushing its
+    // last segment during graceful shutdown (stdin "q" + up to 5s grace period).
+    this.ffmpegExited = true;
   }
 
   async start(request) {
@@ -28,26 +40,44 @@ class ObsIngestService {
       return { recordingStatus: this.recordingStatus };
     }
 
-    const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
-    const container = normalizeContainer(request.container, request.videoCodec);
+    const segmentSeconds = clamp(Number(request.segmentSeconds || 300), 10, 3600);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
-    const outputPattern = path.join(this.recordingsPath, `obs-%Y%m%d-%H%M%S.${container.extension}`);
+    // Generated once per recording session, not per segment file. Segment index (%03d) is
+    // driven by the shared input's PTS boundaries, so it stays identical across both outputs
+    // even though ProRes encoding and H.264 stream-copy run at different real-time speeds —
+    // using "-strftime 1" per output instead would let their filenames drift apart over time.
+    const sessionStamp = formatUtcSessionTimestamp(new Date());
+    const archivalFileName = `obs-${sessionStamp}-%03d.mov`;
+    const archivalOutputPattern = path.join(this.recordingsPath, archivalFileName);
+    const outputPattern = path.join(this.recordingsPath, `obs-${sessionStamp}-%03d.mp4`);
+    const { backupDir, backupPath } = resolveBackupDir(request.backupPath);
 
-    const videoArgs = buildVideoArgs(request.videoCodec);
-
+    // Every recording writes two synchronized outputs from the same input in one
+    // ffmpeg process: a ProRes 422 MOV for archival (hidden from Media Browser)
+    // and a stream-copied H.264 MP4 for playout (the one shown/played in Media Browser).
     const args = [
       "-hide_banner",
       "-loglevel", "warning",
       ...buildUdpInputArgs(inputUrl),
       "-i", inputUrl,
-      "-map", "0",
-      ...videoArgs,
+
+      "-map", "0:v:0",
+      "-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le",
       "-f", "segment",
       "-segment_time", String(segmentSeconds),
       "-reset_timestamps", "1",
-      "-strftime", "1",
-      "-segment_format", container.format,
+      "-segment_start_number", "0",
+      "-segment_format", "mov",
+      archivalOutputPattern,
+
+      "-map", "0",
+      "-c", "copy",
+      "-f", "segment",
+      "-segment_time", String(segmentSeconds),
+      "-reset_timestamps", "1",
+      "-segment_start_number", "0",
+      "-segment_format", "mp4",
       outputPattern,
     ];
 
@@ -71,17 +101,23 @@ class ObsIngestService {
       }
     });
 
+    this.ffmpegExited = false;
+
     startedProcess.on("error", (error) => {
       this.recordingStatus = { ...this.recordingStatus, isRecording: false, startedAt: null, lastMessage: error.message };
       if (this.process === startedProcess) {
         this.process = null;
       }
+      this.ffmpegExited = true;
+      this.stopBackupSync({ finalSync: true });
     });
 
     startedProcess.on("exit", () => {
       const detail = explainFfmpegMessage(this.recordingStatus.lastMessage || "FFmpeg stopped.", inputUrl);
       this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: detail };
       this.process = null;
+      this.ffmpegExited = true;
+      this.stopBackupSync({ finalSync: true });
     });
 
     this.recordingStatus = {
@@ -89,10 +125,21 @@ class ObsIngestService {
       startedAt: new Date().toISOString(),
       inputUrl,
       outputPattern,
+      archivalOutputPattern,
       segmentSeconds,
-      container: container.extension,
-      lastMessage: null,
+      container: "mp4",
+      backupPath,
+      backupAvailable: Boolean(backupDir),
+      lastMessage: backupDir ? null : `Backup drive '${backupPath}' is not available — recording locally only.`,
     };
+
+    if (backupDir) {
+      this.backupSessionStamp = sessionStamp;
+      this.backupDir = backupDir;
+      this.copiedBackupSegments = new Set();
+      this.backupSyncHandle = setInterval(() => this.syncBackupSegments(), BACKUP_SYNC_INTERVAL_MS);
+      this.backupSyncHandle.unref?.();
+    }
 
     await waitForFfmpegStartup(startedProcess, ffmpegPath, () => this.recordingStatus.lastMessage, inputUrl);
 
@@ -121,6 +168,10 @@ class ObsIngestService {
       }, 5000).unref();
     }
 
+    // this.process is cleared here for UI/API purposes (recordingStatus.isRecording), but the
+    // backup sync keys off this.ffmpegExited instead — the OS process may still be flushing its
+    // last segment during graceful shutdown, and the "exit" handler above finalizes the backup
+    // copy only once it has actually terminated.
     this.process = null;
     this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: "Recording stopped." };
     return { recordingStatus: this.recordingStatus };
@@ -129,40 +180,83 @@ class ObsIngestService {
   isProcessRunning() {
     return Boolean(this.process && !this.process.killed && this.process.exitCode === null && this.process.signalCode === null);
   }
+
+  // Mirrors completed ProRes 422 segments to the backup drive. Runs on a poll instead of
+  // fs.watch since the backup target is often a removable drive that can be unmounted mid-recording.
+  async syncBackupSegments() {
+    if (!this.backupDir || !this.backupSessionStamp) return;
+
+    let files;
+    try {
+      files = await fs.promises.readdir(this.recordingsPath);
+    } catch {
+      return;
+    }
+
+    const pattern = new RegExp(`^obs-${this.backupSessionStamp}-(\\d+)\\.mov$`);
+    const segments = files
+      .map((fileName) => {
+        const match = pattern.exec(fileName);
+        return match ? { fileName, index: Number(match[1]) } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.index - b.index);
+
+    // The last (highest-index) segment is still being written by FFmpeg — only mirror finished ones.
+    const finishedSegments = this.ffmpegExited ? segments : segments.slice(0, -1);
+
+    for (const segment of finishedSegments) {
+      if (this.copiedBackupSegments.has(segment.fileName)) continue;
+
+      try {
+        await fs.promises.copyFile(
+          path.join(this.recordingsPath, segment.fileName),
+          path.join(this.backupDir, segment.fileName),
+        );
+        this.copiedBackupSegments.add(segment.fileName);
+      } catch (error) {
+        this.recordingStatus = { ...this.recordingStatus, lastMessage: `Backup copy failed for '${segment.fileName}': ${error.message}` };
+      }
+    }
+  }
+
+  stopBackupSync({ finalSync = false } = {}) {
+    if (this.backupSyncHandle) {
+      clearInterval(this.backupSyncHandle);
+      this.backupSyncHandle = null;
+    }
+
+    if (finalSync && this.backupDir) {
+      this.syncBackupSegments().finally(() => {
+        this.backupDir = null;
+        this.backupSessionStamp = null;
+      });
+    }
+  }
 }
 
 module.exports = {
   ObsIngestService,
 };
 
-function normalizeContainer(container, videoCodec) {
-  if (isProRes(videoCodec)) {
-    return { extension: "mov", format: "mov" };
-  }
+function resolveBackupDir(requestedBackupPath) {
+  const backupPath = String((requestedBackupPath && String(requestedBackupPath).trim()) || process.env.EMERALD_BACKUP_PATH || "E:\\").trim();
 
-  switch (String(container || "").trim().toLowerCase()) {
-    case "mov":
-      return { extension: "mov", format: "mov" };
-    case "mkv":
-    case "matroska":
-      return { extension: "mkv", format: "matroska" };
-    case "ts":
-    case "mpegts":
-      return { extension: "ts", format: "mpegts" };
-    default:
-      return { extension: "mp4", format: "mp4" };
+  try {
+    fs.mkdirSync(backupPath, { recursive: true });
+    fs.accessSync(backupPath, fs.constants.W_OK);
+    return { backupDir: backupPath, backupPath };
+  } catch {
+    // Backup drive not present/writable (e.g. removable drive unplugged) — record locally only.
+    return { backupDir: null, backupPath };
   }
 }
 
-function buildVideoArgs(videoCodec) {
-  if (isProRes(videoCodec)) {
-    return ["-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le", "-an"];
-  }
-  return ["-c", "copy"];
-}
+function formatUtcSessionTimestamp(date) {
+  const pad = (value, length = 2) => String(value).padStart(length, "0");
 
-function isProRes(videoCodec) {
-  return /prores/i.test(String(videoCodec || ""));
+  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}`
+    + `-${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`;
 }
 
 function clamp(value, min, max) {

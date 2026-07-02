@@ -51,6 +51,11 @@ function pad(value: number) {
       </label>
 
       <label class="field-row field-wide">
+        <span>Backup path (ProRes 422 copy)</span>
+        <input v-model="recorder.settings.backupPath" class="value-input" placeholder="E:\" />
+      </label>
+
+      <label class="field-row field-wide">
         <span>Title</span>
         <input v-model="recorder.settings.title" class="value-input" placeholder="Click to add title" />
       </label>
@@ -147,6 +152,15 @@ function pad(value: number) {
       <div>
         <dt>Output</dt>
         <dd>{{ recorder.recorderStatus?.outputPattern || "--" }}</dd>
+      </div>
+      <div>
+        <dt>Backup</dt>
+        <dd>
+          {{ recorder.recorderStatus?.backupPath || "--" }}
+          <template v-if="recorder.recorderStatus">
+            ({{ recorder.recorderStatus.backupAvailable ? "active" : "unavailable" }})
+          </template>
+        </dd>
       </div>
       <div>
         <dt>Saved Segments</dt>
