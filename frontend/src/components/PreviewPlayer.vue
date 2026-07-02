@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import mediaStill from "../assets/reference-media.png";
 import settingsIcon from "../assets/icons/settings.png";
 
 const props = defineProps<{
@@ -245,7 +244,6 @@ function togglePlayback() {
         :autoplay="isCapture"
         muted
         playsinline
-        :poster="isCapture ? undefined : mediaStill"
         @playing="onPlaying"
         @pause="onPause"
         @ended="onEnded"
@@ -269,7 +267,7 @@ function togglePlayback() {
           </div>
           <div>
             <dt>Description</dt>
-            <dd>{{ description || "OBS recordings saved by the backend will preview here." }}</dd>
+            <dd>{{ description || "Emerald recordings saved by the backend will preview here." }}</dd>
           </div>
           <div>
             <dt>Details</dt>
@@ -328,11 +326,11 @@ function togglePlayback() {
       </div>
       <div>
         <dt>Title</dt>
-        <dd>{{ title || "OBS live preview" }}</dd>
+        <dd>{{ title || "Emerald live preview" }}</dd>
       </div>
       <div>
         <dt>Description</dt>
-        <dd>{{ description || "The right video frame shows the stream currently being published from OBS." }}</dd>
+        <dd>{{ description || "The right video frame shows the stream currently being published from Emerald." }}</dd>
       </div>
       <div>
         <dt>Output path</dt>

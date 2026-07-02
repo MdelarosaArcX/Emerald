@@ -40,7 +40,7 @@ class ObsIngestService {
       return { recordingStatus: this.recordingStatus };
     }
 
-    const segmentSeconds = clamp(Number(request.segmentSeconds || 300), 10, 3600);
+    const segmentSeconds = clamp(Number(process.env.EMERALD_SEGMENT_SECONDS || 300), 10, 3600);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
     // Generated once per recording session, not per segment file. Segment index (%03d) is
@@ -51,7 +51,7 @@ class ObsIngestService {
     const archivalFileName = `obs-${sessionStamp}-%03d.mov`;
     const archivalOutputPattern = path.join(this.recordingsPath, archivalFileName);
     const outputPattern = path.join(this.recordingsPath, `obs-${sessionStamp}-%03d.mp4`);
-    const { backupDir, backupPath } = resolveBackupDir(request.backupPath);
+    const { backupDir, backupPath } = resolveBackupDir();
 
     // Every recording writes two synchronized outputs from the same input in one
     // ffmpeg process: a ProRes 422 MOV for archival (hidden from Media Browser)
@@ -239,11 +239,15 @@ module.exports = {
   ObsIngestService,
 };
 
-function resolveBackupDir(requestedBackupPath) {
-  const backupPath = String((requestedBackupPath && String(requestedBackupPath).trim()) || process.env.EMERALD_BACKUP_PATH || "E:\\").trim();
+function resolveBackupDir() {
+  const backupPath = String(process.env.EMERALD_BACKUP_PATH || "E:\\").trim();
 
   try {
-    fs.mkdirSync(backupPath, { recursive: true });
+    // mkdirSync throws EPERM on Windows for a path that already exists (most notably a bare
+    // drive root like "E:\"), even with recursive:true — only create it when it's missing.
+    if (!fs.existsSync(backupPath)) {
+      fs.mkdirSync(backupPath, { recursive: true });
+    }
     fs.accessSync(backupPath, fs.constants.W_OK);
     return { backupDir: backupPath, backupPath };
   } catch {

@@ -6,35 +6,12 @@ const recorder = useRecorderStore();
 
 const activeStreams = computed(() => recorder.ingestStatus?.activeStreams.join(", ") || "None");
 const recordingCount = computed(() => recorder.recordings.length);
-const durationTimecode = computed({
-  get: () => formatTimecode(recorder.settings.segmentSeconds),
-  set: (value: string) => {
-    recorder.settings.segmentSeconds = parseTimecode(value);
-  },
-});
 
 watch(
   () => recorder.settings,
   () => recorder.saveSettings(),
   { deep: true }
 );
-
-function formatTimecode(totalSeconds: number) {
-  const seconds = Math.max(0, Number(totalSeconds) || 0);
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainder = seconds % 60;
-  return `${pad(hours)}:${pad(minutes)}:${pad(remainder)}:00`;
-}
-
-function parseTimecode(value: string) {
-  const [hours = "0", minutes = "0", seconds = "0"] = value.split(":");
-  return (Number(hours) || 0) * 3600 + (Number(minutes) || 0) * 60 + (Number(seconds) || 0);
-}
-
-function pad(value: number) {
-  return String(Math.trunc(value)).padStart(2, "0");
-}
 </script>
 
 <template>
@@ -51,11 +28,6 @@ function pad(value: number) {
       </label>
 
       <label class="field-row field-wide">
-        <span>Backup path (ProRes 422 copy)</span>
-        <input v-model="recorder.settings.backupPath" class="value-input" placeholder="E:\" />
-      </label>
-
-      <label class="field-row field-wide">
         <span>Title</span>
         <input v-model="recorder.settings.title" class="value-input" placeholder="Click to add title" />
       </label>
@@ -63,11 +35,6 @@ function pad(value: number) {
       <label class="field-row field-wide">
         <span>Description</span>
         <input v-model="recorder.settings.description" class="value-input" placeholder="Click to add description" />
-      </label>
-
-      <label class="field-row">
-        <span>Set Duration</span>
-        <input v-model="durationTimecode" class="compact-input" inputmode="numeric" />
       </label>
 
       <label class="field-row">
@@ -152,15 +119,6 @@ function pad(value: number) {
       <div>
         <dt>Output</dt>
         <dd>{{ recorder.recorderStatus?.outputPattern || "--" }}</dd>
-      </div>
-      <div>
-        <dt>Backup</dt>
-        <dd>
-          {{ recorder.recorderStatus?.backupPath || "--" }}
-          <template v-if="recorder.recorderStatus">
-            ({{ recorder.recorderStatus.backupAvailable ? "active" : "unavailable" }})
-          </template>
-        </dd>
       </div>
       <div>
         <dt>Saved Segments</dt>

@@ -54,7 +54,7 @@ const selectedRecording = computed(() => {
     </div>
 
     <p v-if="!recordings.length" class="empty-browser">
-      Recorded OBS chunks will appear here after the first segment is saved.
+      Recorded Emerald chunks will appear here after the first segment is saved.
     </p>
 
     <div v-else-if="!splitView" class="clip-strip">

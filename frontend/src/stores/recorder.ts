@@ -7,8 +7,6 @@ type RecorderStatus = {
   outputPattern: string | null;
   segmentSeconds: number;
   container: string;
-  backupPath: string | null;
-  backupAvailable: boolean;
   lastMessage: string | null;
 };
 
@@ -49,7 +47,6 @@ type RecorderSettings = {
   audioBitrate: string;
   audioSampleFrequency: string;
   ffmpegPath: string;
-  backupPath: string;
 };
 
 const defaultSettings: RecorderSettings = {
@@ -66,7 +63,6 @@ const defaultSettings: RecorderSettings = {
   audioBitrate: "320 kbps",
   audioSampleFrequency: "48 kHz",
   ffmpegPath: "ffmpeg",
-  backupPath: "E:\\",
 };
 
 export const useRecorderStore = defineStore("recorder", {
