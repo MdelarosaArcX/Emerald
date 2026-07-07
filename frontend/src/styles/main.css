@@ -632,6 +632,48 @@ dd {
   font-weight: 500;
 }
 
+@keyframes on-air-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.on-air-badge {
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 3px;
+  background: #ff4d57;
+  color: #1a0d0e;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  animation: on-air-pulse 1.4s ease-in-out infinite;
+}
+
+.on-air-badge.stalled {
+  background: #ffb238;
+  animation: none;
+}
+
+.tally-light {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  padding: 4px 10px;
+  border-radius: 3px;
+  background: rgba(255, 77, 87, 0.92);
+  color: #1a0d0e;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  animation: on-air-pulse 1.4s ease-in-out infinite;
+}
+
+.tally-light.stalled {
+  background: rgba(255, 178, 56, 0.92);
+  animation: none;
+}
+
 .config-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -878,13 +920,19 @@ button:disabled {
   background: #121b2f;
 }
 
+.clip-meta-preview {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid #27498f;
+  background: #070b13;
+}
+
 .clip-meta-preview img {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  height: 100%;
   object-fit: cover;
-  border: 1px solid #27498f;
-  background: #070b13;
 }
 
 .clip-meta-list {
@@ -919,6 +967,7 @@ button:disabled {
   width: 100%;
   aspect-ratio: 16 / 7.75;
   object-fit: cover;
+  background: #070b13;
   filter: brightness(0.48);
 }
 
@@ -942,6 +991,40 @@ button:disabled {
   margin: 2px 0 0;
   color: #8793ad;
   font-size: 0.8rem;
+}
+
+.preview-actions {
+  margin: 10px 0;
+}
+
+.onair-cue {
+  margin: 13px 0;
+  padding-top: 12px;
+  border-top: 1px solid rgba(92, 111, 159, 0.5);
+}
+
+.onair-cue h3 {
+  margin: 0 0 8px;
+  font-size: 0.92rem;
+  font-weight: 500;
+  color: rgba(185, 194, 219, 0.72);
+}
+
+.cue-clip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #f2f6ff;
+  font-size: 0.86rem;
+}
+
+.cue-clip img {
+  width: 56px;
+  height: 38px;
+  border-radius: 3px;
+  object-fit: cover;
+  background: #070b13;
 }
 
 @media (max-width: 1240px) {

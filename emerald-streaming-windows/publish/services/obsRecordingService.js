@@ -20,7 +20,7 @@ class ObsRecordingService {
 
   start(request) {
     if (!request.inputUrl || !String(request.inputUrl).trim()) {
-      throw new Error("OBS recording URL is required.");
+      throw new Error("Recording URL is required.");
     }
 
     if (this.isProcessRunning()) {
@@ -30,7 +30,7 @@ class ObsRecordingService {
     const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
     const container = normalizeContainer(request.container);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
-    const outputPattern = path.join(this.recordingsPath, `obs-%Y%m%d-%H%M%S.${container.extension}`);
+    const outputPattern = path.join(this.recordingsPath, `emerald-%Y%m%d-%H%M%S.${container.extension}`);
     const args = [
       "-hide_banner",
       "-loglevel", "warning",
@@ -159,7 +159,7 @@ module.exports = {
 
 function explainFfmpegMessage(message) {
   if (message && message.toLowerCase().includes("error opening input")) {
-    return `${message} Check that OBS is streaming to rtmp://127.0.0.1:1935/live with stream key emerald, then start recording again.`;
+    return `${message} Check that the stream is streaming to rtmp://127.0.0.1:1935/live with stream key emerald, then start recording again.`;
   }
 
   return message;

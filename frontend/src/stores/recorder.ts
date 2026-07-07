@@ -7,8 +7,6 @@ type RecorderStatus = {
   outputPattern: string | null;
   segmentSeconds: number;
   container: string;
-  backupPath: string | null;
-  backupAvailable: boolean;
   lastMessage: string | null;
 };
 
@@ -29,6 +27,7 @@ type IngestStatus = {
 
 export type RecordingSegment = {
   fileName: string;
+  sessionFolder: string;
   url: string;
   thumbnailUrl: string;
   size: number;
@@ -37,7 +36,6 @@ export type RecordingSegment = {
 
 type RecorderSettings = {
   inputUrl: string;
-  outputPath: string;
   title: string;
   description: string;
   fps: string;
@@ -49,13 +47,11 @@ type RecorderSettings = {
   audioBitrate: string;
   audioSampleFrequency: string;
   ffmpegPath: string;
-  backupPath: string;
 };
 
 const defaultSettings: RecorderSettings = {
   inputUrl: "udp://0.0.0.0:5000",
-  outputPath: "recordings/obs",
-  title: "Deltacast live preview",
+  title: "Emerald live preview",
   description: "UDP input recording from the Deltacast bridge.",
   fps: "25",
   container: "mov",
@@ -66,7 +62,6 @@ const defaultSettings: RecorderSettings = {
   audioBitrate: "320 kbps",
   audioSampleFrequency: "48 kHz",
   ffmpegPath: "ffmpeg",
-  backupPath: "E:\\",
 };
 
 export const useRecorderStore = defineStore("recorder", {

@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 require("dotenv").config();
@@ -10,17 +11,21 @@ const multipart = require("@fastify/multipart");
 const fastifyStatic = require("@fastify/static");
 
 const { normalizeFfmpegPath } = require("./services/obsRecordingService");
-const { ObsIngestService } = require("./services/obsIngestService");
+const { ObsIngestService, TX_LIVE_PLAYLIST_NAME, startOrphanTxPlaylistWatcher } = require("./services/obsIngestService");
 const { RtmpIngestService } = require("./services/rtmpIngestService");
+const { RtmpOutService } = require("./services/rtmpOutService");
 const { WebrtcPreviewService } = require("./services/webrtcPreviewService");
 const { probeObsStream } = require("./services/obsStreamProbeService");
 const { runtimeServices } = require("./services/runtimeServices");
+const { DeltacastTxService } = require("./services/deltacastTxService");
 
 const contentRoot = __dirname;
 const webRoot = path.join(contentRoot, "wwwroot");
-const recordingsPath = path.join(contentRoot, "Recordings");
+const recordingsPath = process.env.EMERALD_RECORDINGS_PATH
+  ? path.resolve(process.env.EMERALD_RECORDINGS_PATH)
+  : path.join(contentRoot, "Recordings123");
 const thumbnailsPath = path.join(recordingsPath, ".thumbnails");
-
+console.log(`Emerald backend content root: ${recordingsPath}`);
 fs.mkdirSync(recordingsPath, { recursive: true });
 fs.mkdirSync(thumbnailsPath, { recursive: true });
 
@@ -33,8 +38,15 @@ const app = fastify({
 
 const obsIngest = new ObsIngestService(recordingsPath);
 const rtmpIngest = new RtmpIngestService();
+const rtmpOut = new RtmpOutService();
 const webrtcPreview = new WebrtcPreviewService();
+const deltacastTx = new DeltacastTxService();
 rtmpIngest.start();
+
+// Keeps any emerald-tx-live.m3u8 left orphaned by a prior crash/restart in sync with its actual
+// .ts segments (or finalized once it's gone idle), so playback/TX can't get stuck waiting forever
+// on a stale playlist. See startOrphanTxPlaylistWatcher()'s comment in obsIngestService.js.
+startOrphanTxPlaylistWatcher(recordingsPath, (folder) => folder === obsIngest.sessionFolderName && obsIngest.recordingStatus.isRecording);
 
 registerPlugins(app).then(() => registerRoutes(app)).then(start).catch((error) => {
   app.log.error(error);
@@ -76,6 +88,7 @@ function registerRoutes(server) {
     queues: runtimeServices.queueStatus(),
     postgres: runtimeServices.postgresStatus(),
     rtmpIngest: rtmpIngest.status,
+    rtmpOut: rtmpOut.status,
     webrtcPreview: webrtcPreview.status,
   }));
 
@@ -121,37 +134,44 @@ function registerRoutes(server) {
   server.get("/api/obs-recording/status", async () => obsIngest.recordingStatus);
 
   server.get("/api/obs-recordings", async () => {
-    const files = await fs.promises.readdir(recordingsPath);
-    const recordings = await Promise.all(files.map(async (fileName) => {
-      const filePath = path.join(recordingsPath, fileName);
-      const stat = await fs.promises.stat(filePath);
+    const sessionFolders = await listSessionFolders(recordingsPath);
+    const recordings = (await Promise.all(sessionFolders.map(async (sessionFolder) => {
+      const sessionDir = path.join(recordingsPath, sessionFolder);
+      const files = await fs.promises.readdir(sessionDir);
 
-      return {
-        fileName,
-        url: `/recordings/${fileName}`,
-        thumbnailUrl: `/api/obs-recordings/${encodeURIComponent(fileName)}/thumbnail`,
-        size: stat.size,
-        createdAt: stat.birthtime.toISOString(),
-        lastWriteTime: stat.mtimeMs,
-      };
-    }));
+      return Promise.all(files.map(async (fileName) => {
+        const filePath = path.join(sessionDir, fileName);
+        const stat = await fs.promises.stat(filePath);
+
+        return {
+          fileName,
+          sessionFolder,
+          url: `/recordings/${sessionFolder}/${fileName}`,
+          thumbnailUrl: `/api/obs-recordings/${encodeURIComponent(sessionFolder)}/${encodeURIComponent(fileName)}/thumbnail`,
+          size: stat.size,
+          createdAt: stat.birthtime.toISOString(),
+          lastWriteTime: stat.mtimeMs,
+        };
+      }));
+    }))).flat();
 
     return recordings
-      .filter((file) => file.size >= 0 && !file.fileName.startsWith(".") && !/\.mov$/i.test(file.fileName))
+      .filter((file) => file.size >= 0 && /\.mp4$/i.test(file.fileName))
       .sort((a, b) => b.lastWriteTime - a.lastWriteTime)
       .slice(0, 100)
       .map(({ lastWriteTime, ...file }) => file);
   });
 
-  server.get("/api/obs-recordings/:fileName/thumbnail", async (request, reply) => {
+  server.get("/api/obs-recordings/:folder/:fileName/thumbnail", async (request, reply) => {
+    const folder = path.basename(request.params.folder || "");
     const fileName = path.basename(request.params.fileName || "");
-    const recordingPath = path.join(recordingsPath, fileName);
+    const recordingPath = path.join(recordingsPath, folder, fileName);
 
-    if (!fileName || !isInsideDirectory(recordingsPath, recordingPath) || !fs.existsSync(recordingPath)) {
+    if (!fileName || !folder || !isInsideDirectory(recordingsPath, recordingPath) || !fs.existsSync(recordingPath)) {
       return reply.code(404).send({ message: "Recording was not found." });
     }
 
-    const thumbnailPath = path.join(thumbnailsPath, `${Buffer.from(fileName).toString("base64url")}.jpg`);
+    const thumbnailPath = path.join(thumbnailsPath, `${Buffer.from(`${folder}/${fileName}`).toString("base64url")}.jpg`);
 
     if (!fs.existsSync(thumbnailPath)) {
       await createRecordingThumbnail(recordingPath, thumbnailPath, process.env.FFMPEG_PATH);
@@ -161,6 +181,64 @@ function registerRoutes(server) {
       .type("image/jpeg")
       .header("Cache-Control", "public, max-age=86400")
       .send(fs.createReadStream(thumbnailPath));
+  });
+
+  server.get("/api/recording-sessions", async () => {
+    const sessionFolders = await listSessionFolders(recordingsPath);
+
+    const sessions = await Promise.all(sessionFolders.map(async (folder) => {
+      const sessionDir = path.join(recordingsPath, folder);
+      const [stat, files] = await Promise.all([
+        fs.promises.stat(sessionDir),
+        fs.promises.readdir(sessionDir),
+      ]);
+      const segmentFiles = files.filter((fileName) => /\.mp4$/i.test(fileName));
+      const sizes = await Promise.all(files.map(async (fileName) => (await fs.promises.stat(path.join(sessionDir, fileName))).size));
+
+      return {
+        folder,
+        createdAt: stat.birthtime.toISOString(),
+        segmentCount: segmentFiles.length,
+        size: sizes.reduce((sum, size) => sum + size, 0),
+        isActive: folder === obsIngest.sessionFolderName && obsIngest.recordingStatus.isRecording,
+      };
+    }));
+
+    return sessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  });
+
+  server.get("/api/recording-sessions/:folder/segments", async (request, reply) => {
+    const folder = path.basename(request.params.folder || "");
+    const sessionDir = path.join(recordingsPath, folder);
+
+    if (!folder || !isInsideDirectory(recordingsPath, sessionDir) || !fs.existsSync(sessionDir)) {
+      return reply.code(404).send({ message: "Recording session was not found." });
+    }
+
+    const files = await fs.promises.readdir(sessionDir);
+    const pattern = /^emerald-(\d+)\.mp4$/i;
+    const segments = await Promise.all(files
+      .map((fileName) => {
+        const match = pattern.exec(fileName);
+        return match ? { fileName, index: Number(match[1]) } : null;
+      })
+      .filter(Boolean)
+      .map(async ({ fileName, index }) => {
+        const stat = await fs.promises.stat(path.join(sessionDir, fileName));
+
+        return {
+          fileName,
+          index,
+          url: `/recordings/${folder}/${fileName}`,
+          thumbnailUrl: `/api/obs-recordings/${encodeURIComponent(folder)}/${encodeURIComponent(fileName)}/thumbnail`,
+          size: stat.size,
+          createdAt: stat.birthtime.toISOString(),
+        };
+      }));
+
+    return segments
+      .sort((a, b) => a.index - b.index)
+      .map(({ index, ...segment }) => segment);
   });
 
   server.post("/api/obs-recording/start", async (request, reply) => {
@@ -196,6 +274,124 @@ function registerRoutes(server) {
 
   server.post("/api/obs-stream/probe", async (request) => probeObsStream(request.body || {}));
 
+  server.get("/api/rtmp-out/status", async () => rtmpOut.status);
+
+  server.post("/api/rtmp-out/start", async (request, reply) => {
+    const localInputError = rtmpIngest.getLocalInputError(request.body?.inputUrl);
+    if (localInputError) {
+      return reply.code(400).send({ message: localInputError });
+    }
+
+    try {
+      return await rtmpOut.start(request.body || {});
+    } catch (error) {
+      return reply.code(400).send({ message: error.message });
+    }
+  });
+
+  server.post("/api/rtmp-out/stop", async () => rtmpOut.stop());
+
+  server.get("/api/tx/status", async (_request, reply) => {
+    try {
+      return await deltacastTx.status();
+    } catch (error) {
+      return reply.code(502).send({ message: error.message });
+    }
+  });
+
+  server.post("/api/tx/start", async (request, reply) => {
+    const folder = path.basename(String(request.body?.folder || ""));
+    const sessionDir = path.join(recordingsPath, folder);
+
+    if (!folder) {
+      return reply.code(400).send({ message: "Select a recording folder in Playback before pushing on air." });
+    }
+
+    if (!isInsideDirectory(recordingsPath, sessionDir) || !fs.existsSync(sessionDir)) {
+      return reply.code(404).send({ message: "Recording session was not found." });
+    }
+
+    const requestedFileName = request.body?.fileName ? path.basename(String(request.body.fileName)) : null;
+
+    if (requestedFileName) {
+      // Operator staged a single clip in Playback ("Put on Air") — push exactly that file,
+      // decoded once and stopped, instead of the whole-folder behaviors below.
+      if (!/^emerald-\d+\.mp4$/i.test(requestedFileName)) {
+        return reply.code(400).send({ message: "Invalid clip file name." });
+      }
+
+      const filePath = path.join(sessionDir, requestedFileName);
+      if (!isInsideDirectory(recordingsPath, filePath) || !fs.existsSync(filePath)) {
+        return reply.code(404).send({ message: `Clip '${requestedFileName}' was not found in '${folder}'.` });
+      }
+
+      try {
+        return await deltacastTx.start(filePath, { live: false, loop: false });
+      } catch (error) {
+        return reply.code(502).send({ message: error.message });
+      }
+    }
+
+    // A folder that's still being recorded into is followed live via the HLS rendition
+    // (emerald-tx-NNN.ts segments, written by obsIngestService alongside the archival mov/mp4
+    // outputs) through a playlist Node maintains itself — emerald-tx-live.m3u8, rewritten on
+    // every maintenance tick from whatever segments exist on disk. Ffmpeg's own hls muxer also
+    // writes a playlist (emerald-tx.m3u8) but its rename-based update gets stuck on Windows once
+    // a reader has it open, so that one is ignored. Ffmpeg's "hls" demuxer follows the
+    // Node-maintained playlist directly — finished segments play in order, and it naturally
+    // waits at the live edge for the next one — instead of looping a one-time snapshot the way
+    // a finished session is played back below.
+    const isLive = folder === obsIngest.sessionFolderName && obsIngest.recordingStatus.isRecording;
+
+    if (isLive) {
+      const txPlaylistPath = path.join(sessionDir, TX_LIVE_PLAYLIST_NAME);
+
+      if (!fs.existsSync(txPlaylistPath)) {
+        return reply.code(400).send({ message: "TX playlist isn't ready yet — wait for the first segment to finish and try again." });
+      }
+
+      try {
+        return await deltacastTx.start(txPlaylistPath, { live: true });
+      } catch (error) {
+        return reply.code(502).send({ message: error.message });
+      }
+    }
+
+    const files = await fs.promises.readdir(sessionDir);
+    const pattern = /^emerald-(\d+)\.mp4$/i;
+    const segments = files
+      .map((fileName) => {
+        const match = pattern.exec(fileName);
+        return match ? { fileName, index: Number(match[1]) } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.index - b.index);
+
+    if (!segments.length) {
+      return reply.code(400).send({ message: `No playable segments found in '${folder}'.` });
+    }
+
+    const playlistPath = path.join(os.tmpdir(), "emerald-tx-playlist.txt");
+    const playlistContent = segments
+      .map((segment) => `file '${path.join(sessionDir, segment.fileName).replace(/\\/g, "/")}'`)
+      .join("\n");
+    await fs.promises.writeFile(playlistPath, playlistContent, "utf8");
+
+    try {
+      return await deltacastTx.start(playlistPath);
+    } catch (error) {
+      return reply.code(502).send({ message: error.message });
+    }
+  });
+
+  server.post("/api/tx/stop", async (_request, reply) => {
+    try {
+      return await deltacastTx.stop();
+    } catch (error) {
+      return reply.code(502).send({ message: error.message });
+    }
+  });
+
   server.setErrorHandler((error, _request, reply) => {
     reply.code(error.statusCode || error.status || 400).send({
       message: error.message || "Unexpected server error.",
@@ -212,6 +408,7 @@ async function start() {
 const shutdown = () => {
   obsIngest.stop();
   rtmpIngest.stop();
+  rtmpOut.stop();
   webrtcPreview.stopAll();
   runtimeServices.close()
     .finally(() => app.close())
@@ -238,6 +435,13 @@ function formatUtcTimestamp(date) {
   return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}`
     + `-${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`
     + `-${pad(date.getUTCMilliseconds(), 3)}`;
+}
+
+async function listSessionFolders(rootDirectory) {
+  const entries = await fs.promises.readdir(rootDirectory, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name);
 }
 
 function isInsideDirectory(rootDirectory, targetPath) {

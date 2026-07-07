@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
-import mediaStill from "../assets/reference-media.png";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import settingsIcon from "../assets/icons/settings.png";
 
 const props = defineProps<{
   src: string;
   fps?: number;
-  variant?: "library" | "capture";
+  variant?: "library" | "capture" | "broadcast";
   title?: string;
   description?: string;
   detail?: string;
@@ -25,6 +24,8 @@ const props = defineProps<{
   isBusy?: boolean;
   splitView?: boolean;
   startAt?: string;
+  showPutOnAir?: boolean;
+  canPutOnAir?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -32,6 +33,7 @@ const emit = defineEmits<{
   stop: [];
   configure: [];
   toggleSplitView: [];
+  putOnAir: [];
 }>();
 
 const video = ref<HTMLVideoElement | null>(null);
@@ -43,9 +45,18 @@ let pc: RTCPeerConnection | null = null;
 let webrtcSessionUrl: string | null = null;
 let abortController: AbortController | null = null;
 let rafId: number | null = null;
+let reconnectTimer: number | null = null;
+let stallWatchdogHandle: number | null = null;
+let lastFrameTime = -1;
+let lastFrameProgressAt = 0;
+
+const STALL_TIMEOUT_MS = 8000;
+const STALL_CHECK_INTERVAL_MS = 2000;
 
 const mode = computed(() => props.variant || "library");
-const isCapture = computed(() => mode.value === "capture");
+// "capture" and "broadcast" are both live, wall-clock-driven decks — they only differ in the
+// meta fields shown below the transport bar (recording config vs. broadcast destination).
+const isCapture = computed(() => mode.value === "capture" || mode.value === "broadcast");
 const showSourcePrompt = computed(() => isCapture.value && !props.isRecording && !hasPlayback.value);
 const showPlayIcon = computed(() => (isCapture.value ? !props.isRecording : isPaused.value));
 const displayTimecode = computed(() => {
@@ -60,7 +71,24 @@ const displayTimecode = computed(() => {
 
 watch(() => props.src, loadSource, { immediate: true });
 
+// Background/inactive browser tabs throttle timers and can leave the decoder in a
+// frozen state — WebRTC's own reconnect logic can't reliably detect this since even
+// the stall-watchdog interval gets throttled. Force a clean reconnect the moment the
+// tab becomes visible again instead of waiting for the user to manually refresh.
+function handleVisibilityChange() {
+  if (document.visibilityState !== "visible") return;
+  if (!props.src || !props.src.includes("/whep")) return;
+
+  teardownWebrtc();
+  connectWebrtc(props.src);
+}
+
+onMounted(() => {
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+});
+
 onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   teardownWebrtc();
   stopTimecodeLoop();
 });
@@ -136,6 +164,12 @@ function pad(n: number) {
 function teardownWebrtc() {
   abortController?.abort();
   abortController = null;
+  stopStallWatchdog();
+
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
 
   if (pc) {
     pc.close();
@@ -148,6 +182,22 @@ function teardownWebrtc() {
   }
 }
 
+// Reconnects only if `whepUrl` is still the src this player wants — guards against a
+// stale watchdog/state-change callback firing after the src has already moved on.
+function scheduleReconnect(whepUrl: string) {
+  if (reconnectTimer !== null) return;
+
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null;
+    if (props.src !== whepUrl) return;
+    teardownWebrtc();
+    connectWebrtc(whepUrl);
+  }, 1000);
+}
+
+// Live preview should never require a manual page refresh to recover: retries the WHEP
+// handshake indefinitely (until the src changes or the component unmounts) instead of
+// giving up after a fixed number of attempts, since MediaMTX/ffmpeg may still be starting up.
 async function connectWebrtc(whepUrl: string) {
   const ac = new AbortController();
   abortController = ac;
@@ -163,12 +213,17 @@ async function connectWebrtc(whepUrl: string) {
     }
   };
 
+  connection.onconnectionstatechange = () => {
+    if (ac.signal.aborted) return;
+    if (["failed", "disconnected", "closed"].includes(connection.connectionState)) {
+      scheduleReconnect(whepUrl);
+    }
+  };
+
   const offer = await connection.createOffer();
   await connection.setLocalDescription(offer);
 
-  for (let attempt = 0; attempt < 40; attempt++) {
-    if (ac.signal.aborted) return;
-
+  while (!ac.signal.aborted) {
     let response: Response | null = null;
     try {
       response = await fetch(whepUrl, {
@@ -178,10 +233,10 @@ async function connectWebrtc(whepUrl: string) {
         signal: ac.signal,
       });
     } catch {
-      // Aborted means the component unmounted — stop retrying
+      // Aborted means the component unmounted or the src changed — stop retrying
       if (ac.signal.aborted) return;
-      // Network error (connection refused, WHEP not ready yet) — retry
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Network error (connection refused, WHEP not ready yet) — keep retrying
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       continue;
     }
 
@@ -190,10 +245,47 @@ async function connectWebrtc(whepUrl: string) {
       const location = response.headers.get("Location");
       webrtcSessionUrl = location ? new URL(location, whepUrl).toString() : null;
       await connection.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      startStallWatchdog();
       return;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+// Backstop for the case where the connection reports "connected" but no frames are
+// actually flowing (e.g. the track stalls without ever changing connection state) —
+// checks that the video element's playback position keeps advancing, and reconnects
+// from scratch if it's been frozen for too long.
+function startStallWatchdog() {
+  stopStallWatchdog();
+  lastFrameTime = video.value?.currentTime ?? -1;
+  lastFrameProgressAt = Date.now();
+
+  stallWatchdogHandle = window.setInterval(() => {
+    if (!video.value) return;
+
+    const currentTime = video.value.currentTime;
+    if (currentTime !== lastFrameTime) {
+      lastFrameTime = currentTime;
+      lastFrameProgressAt = Date.now();
+      return;
+    }
+
+    if (Date.now() - lastFrameProgressAt > STALL_TIMEOUT_MS) {
+      const whepUrl = props.src;
+      teardownWebrtc();
+      if (whepUrl && whepUrl.includes("/whep")) {
+        connectWebrtc(whepUrl);
+      }
+    }
+  }, STALL_CHECK_INTERVAL_MS);
+}
+
+function stopStallWatchdog() {
+  if (stallWatchdogHandle !== null) {
+    window.clearInterval(stallWatchdogHandle);
+    stallWatchdogHandle = null;
   }
 }
 
@@ -245,7 +337,6 @@ function togglePlayback() {
         :autoplay="isCapture"
         muted
         playsinline
-        :poster="isCapture ? undefined : mediaStill"
         @playing="onPlaying"
         @pause="onPause"
         @ended="onEnded"
@@ -269,7 +360,7 @@ function togglePlayback() {
           </div>
           <div>
             <dt>Description</dt>
-            <dd>{{ description || "OBS recordings saved by the backend will preview here." }}</dd>
+            <dd>{{ description || "Emerald recordings saved by the backend will preview here." }}</dd>
           </div>
           <div>
             <dt>Details</dt>
@@ -281,21 +372,21 @@ function togglePlayback() {
 
     <div class="transport" :class="{ recording: isCapture }">
       <span v-if="isCapture && isRecording" class="record-label">
-        <i></i> {{ transportLabel || "Recording ..." }}
+        <i></i> {{ transportLabel || (mode === "broadcast" ? "Broadcasting ..." : "Recording ...") }}
       </span>
       <button
         type="button"
         class="pause active"
         :class="{ play: showPlayIcon }"
         :disabled="isCapture ? (isBusy || isRecording) : !props.src"
-        :aria-label="isCapture ? 'Start encoding' : (isPaused ? 'Play' : 'Pause')"
+        :aria-label="isCapture ? (mode === 'broadcast' ? 'Go live' : 'Start encoding') : (isPaused ? 'Play' : 'Pause')"
         @click="togglePlayback"
       ></button>
       <button
         type="button"
         class="stop"
         :disabled="isCapture && (isBusy || !isRecording)"
-        aria-label="Stop encoding"
+        :aria-label="mode === 'broadcast' ? 'Stop broadcast' : 'Stop encoding'"
         @click="isCapture && isRecording ? emit('stop') : undefined"
       ></button>
       <button v-if="mode === 'library'" type="button" class="previous" aria-label="Previous"></button>
@@ -321,6 +412,12 @@ function togglePlayback() {
       </button>
     </div>
 
+    <div v-if="mode === 'library' && showPutOnAir" class="actions preview-actions">
+      <button type="button" :disabled="!canPutOnAir" @click="emit('putOnAir')">
+        Put on Air
+      </button>
+    </div>
+
     <dl v-if="isCapture" class="capture-meta">
       <div>
         <dt>Source URL</dt>
@@ -328,29 +425,29 @@ function togglePlayback() {
       </div>
       <div>
         <dt>Title</dt>
-        <dd>{{ title || "OBS live preview" }}</dd>
+        <dd>{{ title || "Emerald live preview" }}</dd>
       </div>
       <div>
         <dt>Description</dt>
-        <dd>{{ description || "The right video frame shows the stream currently being published from OBS." }}</dd>
+        <dd>{{ description || "The right video frame shows the stream currently being published from Emerald." }}</dd>
       </div>
       <div>
-        <dt>Output path</dt>
+        <dt>{{ mode === "broadcast" ? "Destination" : "Output path" }}</dt>
         <dd>{{ outputPath || "--" }}</dd>
       </div>
       <div>
-        <dt>Duration</dt>
+        <dt>{{ mode === "broadcast" ? "Status" : "Duration" }}</dt>
         <dd>{{ durationLabel || detail || "--" }}</dd>
       </div>
-      <div>
+      <div v-if="mode !== 'broadcast'">
         <dt>FPS</dt>
         <dd>{{ fpsLabel || "--" }}</dd>
       </div>
       <div>
         <dt>Format</dt>
-        <dd>{{ formatLabel || "MOV | ProRes 422" }}</dd>
+        <dd>{{ formatLabel || (mode === "broadcast" ? "FLV | RTMP" : "MOV | ProRes 422") }}</dd>
       </div>
-      <div>
+      <div v-if="mode !== 'broadcast'">
         <dt>Video Bitrate</dt>
         <dd>{{ videoBitrateLabel || "--" }}</dd>
       </div>
@@ -358,7 +455,7 @@ function togglePlayback() {
         <dt>Audio Bitrate</dt>
         <dd>{{ audioBitrateLabel || "--" }}</dd>
       </div>
-      <div>
+      <div v-if="mode !== 'broadcast'">
         <dt>Sample Frequency</dt>
         <dd>{{ sampleFrequencyLabel || "--" }}</dd>
       </div>

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import mediaStill from "../assets/reference-media.png";
 import type { RecordingSegment } from "../stores/recorder";
 
 const props = defineProps<{
@@ -25,9 +24,10 @@ function formatCreatedAt(createdAt: string) {
   return date.toLocaleString();
 }
 
-function useFallbackStill(event: Event) {
-  const image = event.target as HTMLImageElement;
-  image.src = mediaStill;
+// No real thumbnail yet (still generating, or generation failed) — blank instead of a
+// placeholder graphic. visibility (not display) so the box keeps its reserved space.
+function blankOnError(event: Event) {
+  (event.target as HTMLImageElement).style.visibility = "hidden";
 }
 
 const selectedRecording = computed(() => {
@@ -45,7 +45,7 @@ const selectedRecording = computed(() => {
       <span class="crumb">Admin</span>
       <span class="crumb">Emerald IP</span>
       <span class="crumb">recording</span>
-      <span class="crumb active">062226</span>
+      <span class="crumb active">{{ selectedRecording?.sessionFolder || "--" }}</span>
       <div class="browser-tools" aria-hidden="true">
         <span></span>
         <span></span>
@@ -54,7 +54,7 @@ const selectedRecording = computed(() => {
     </div>
 
     <p v-if="!recordings.length" class="empty-browser">
-      Recorded OBS chunks will appear here after the first segment is saved.
+      Recorded Emerald chunks will appear here after the first segment is saved.
     </p>
 
     <div v-else-if="!splitView" class="clip-strip">
@@ -65,7 +65,7 @@ const selectedRecording = computed(() => {
         :class="{ selected: recording.fileName === selectedFileName }"
         @click="emit('select', recording.fileName)"
       >
-        <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="useFallbackStill" />
+        <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="blankOnError" />
         <h3>{{ recording.fileName }}</h3>
         <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
       </article>
@@ -80,7 +80,7 @@ const selectedRecording = computed(() => {
           :class="{ selected: recording.fileName === selectedFileName }"
           @click="emit('select', recording.fileName)"
         >
-          <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="useFallbackStill" />
+          <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="blankOnError" />
           <h3>{{ recording.fileName }}</h3>
           <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
         </article>
@@ -89,9 +89,10 @@ const selectedRecording = computed(() => {
       <aside class="clip-meta-panel" aria-label="Clip metadata">
         <div class="clip-meta-preview">
           <img
-            :src="selectedRecording?.thumbnailUrl || mediaStill"
-            :alt="selectedRecording?.fileName || 'Selected clip'"
-            @error="useFallbackStill"
+            v-if="selectedRecording?.thumbnailUrl"
+            :src="selectedRecording.thumbnailUrl"
+            :alt="selectedRecording.fileName"
+            @error="blankOnError"
           />
         </div>
         <dl class="clip-meta-list">
