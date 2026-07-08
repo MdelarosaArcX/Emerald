@@ -143,6 +143,7 @@ function pad(value: number) {
         :selected-file-name="recorder.selectedRecordingFileName"
         :selected-recording="selectedRecording"
         :split-view="librarySplitView"
+        :enable-folder-browsing="true"
         @select="recorder.selectRecording"
       />
     </section>

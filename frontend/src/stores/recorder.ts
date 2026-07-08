@@ -55,7 +55,7 @@ const defaultSettings: RecorderSettings = {
   description: "UDP input recording from the Deltacast bridge.",
   fps: "25",
   container: "mov",
-  segmentSeconds: 300,
+  segmentSeconds: 120,
   videoCodec: "ProRes 422",
   audioCodec: "AAC",
   videoBitrate: "5000 kbps",
@@ -77,7 +77,12 @@ export const useRecorderStore = defineStore("recorder", {
   }),
   getters: {
     isRecording: (state) => Boolean(state.recorderStatus?.isRecording),
-    activePreviewUrl: (state) => state.webrtcStatus?.whepUrl || "",
+    // The backend's whepUrl is a static, unchanging string regardless of whether the preview
+    // is actually running (see webrtcPreviewService.js) — gating on isRunning here makes this
+    // value genuinely change between stop ("") and start (whepUrl) so PreviewPlayer's
+    // `watch(() => props.src, ...)` actually re-fires and reconnects on every start, instead of
+    // only ever connecting once (requiring a full page refresh to reconnect after a restart).
+    activePreviewUrl: (state) => (state.webrtcStatus?.isRunning ? state.webrtcStatus.whepUrl : ""),
     selectedRecording: (state) => {
       return state.recordings.find((recording) => recording.fileName === state.selectedRecordingFileName)
         || state.recordings[0]
@@ -98,6 +103,10 @@ export const useRecorderStore = defineStore("recorder", {
         if (this.settings.videoCodec === "H.264" && this.settings.container === "mp4") {
           this.settings.videoCodec = "ProRes 422";
           this.settings.container = "mov";
+        }
+        // Migrate the old 5-minute segment default down to the new 2-minute default.
+        if (this.settings.segmentSeconds === 300) {
+          this.settings.segmentSeconds = defaultSettings.segmentSeconds;
         }
       } catch {
         localStorage.removeItem("emerald.streaming.settings");

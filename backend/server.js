@@ -49,6 +49,10 @@ rtmpIngest.start();
 startOrphanTxPlaylistWatcher(recordingsPath, (folder) => folder === obsIngest.sessionFolderName && obsIngest.recordingStatus.isRecording);
 
 registerPlugins(app).then(() => registerRoutes(app)).then(start).catch((error) => {
+  // Fastify's logger is disabled by default (see the `logger: false` above) unless
+  // EMERALD_LOG_LEVEL is set, so app.log.error() alone silently swallows startup failures
+  // (e.g. EADDRINUSE from a backend instance already running) — always print to stderr too.
+  console.error("Emerald backend failed to start:", error);
   app.log.error(error);
   process.exit(1);
 });

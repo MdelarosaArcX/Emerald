@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import PreviewPlayer from "../components/PreviewPlayer.vue";
 import CanvasWorkspace from "../components/CanvasWorkspace.vue";
 import SessionPlaybackDeck from "../components/SessionPlaybackDeck.vue";
@@ -11,7 +11,26 @@ const sessionPlayback = useSessionPlaybackStore();
 const refreshHandle = ref<number | null>(null);
 const librarySplitView = ref(false);
 
-const selectedRecording = computed(() => recorder.selectedRecording);
+// Scopes the Media Browser's clip list to whichever folder is selected in the Playback Deck's
+// Recording Folder dropdown — showing everything when none is selected yet.
+const filteredRecordings = computed(() => {
+  if (!sessionPlayback.selectedFolder) return recorder.recordings;
+  return recorder.recordings.filter((recording) => recording.sessionFolder === sessionPlayback.selectedFolder);
+});
+
+const selectedRecording = computed(() => {
+  return filteredRecordings.value.find((recording) => recording.fileName === recorder.selectedRecordingFileName)
+    || filteredRecordings.value[0]
+    || null;
+});
+
+// Keeps the selection inside the currently filtered folder — otherwise switching folders could
+// leave the preview/Put on Air pointed at a clip from the folder you just navigated away from.
+watch(filteredRecordings, (list) => {
+  if (!list.some((recording) => recording.fileName === recorder.selectedRecordingFileName)) {
+    recorder.selectRecording(list[0]?.fileName || "");
+  }
+}, { immediate: true });
 
 // ProRes 422 MOV is not browser-decodable — don't pass it to the video element. Push On Air
 // is also mp4-only server-side (the archival ProRes files aren't valid TX sources), so the
@@ -97,7 +116,7 @@ function formatDate(value: string) {
         @put-on-air="putSelectedRecordingOnAir"
       />
       <CanvasWorkspace
-        :recordings="recorder.recordings"
+        :recordings="filteredRecordings"
         :selected-file-name="recorder.selectedRecordingFileName"
         :selected-recording="selectedRecording"
         :split-view="librarySplitView"

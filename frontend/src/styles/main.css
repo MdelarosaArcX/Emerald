@@ -808,6 +808,18 @@ textarea:focus {
   color: #ff8a92;
 }
 
+.tidal-lock.active {
+  border-color: rgba(93, 156, 255, 0.75);
+  background: #1c3157;
+  color: #7fb1ff;
+}
+
+.tidal-lock-status {
+  margin: -6px 0 12px;
+  color: #7fb1ff;
+  font-size: 0.82rem;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
@@ -872,17 +884,18 @@ button:disabled {
   color: #35f0b1;
 }
 
-.browser-tools {
-  display: flex;
-  gap: 7px;
-  margin-left: auto;
+button.crumb {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
 }
 
-.browser-tools span {
-  width: 25px;
-  height: 22px;
-  border-radius: 4px;
-  background: #243252;
+button.crumb:hover {
+  background: #2c3e64;
+}
+
+.crumb-sep {
+  color: rgba(153, 164, 191, 0.55);
 }
 
 .clip-strip {

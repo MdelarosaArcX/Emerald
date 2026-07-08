@@ -48,12 +48,19 @@ watch([() => tx.isTransmitting, () => tx.isStalled], ([isTransmitting, isStalled
 
 onMounted(async () => {
   await Promise.all([sessionPlayback.loadSessions(), tx.refresh()]);
-  refreshHandle.value = window.setInterval(() => {
-    sessionPlayback.loadSessions();
-    tx.refresh();
+  // The folder select persists across page loads (localStorage), so playlistUrl can already be
+  // non-empty the moment this component mounts — the watch() below only fires on a *change*,
+  // so without this explicit call the preview would stay blank until the folder was reselected.
+  attachStream(playlistUrl.value);
+  // Tidal Lock's enabled flag persists across refreshes/page navigation (see sessionPlayback
+  // store) — re-sync immediately on mount instead of waiting up to 5s for the next poll tick.
+  await sessionPlayback.applyTidalLock();
+  refreshHandle.value = window.setInterval(async () => {
+    await Promise.all([sessionPlayback.loadSessions(), tx.refresh()]);
     // The TX HLS rendition may not exist yet the instant a recording starts (first segment
     // still in progress) — retry attaching on the same interval instead of a separate timer.
     if (streamFailed) attachStream(playlistUrl.value);
+    await sessionPlayback.applyTidalLock();
   }, 5000);
 });
 
@@ -320,8 +327,8 @@ function formatLastFrame(value?: string | null) {
         <select
           class="compact-select"
           :value="sessionPlayback.selectedFolder"
-          :disabled="tx.isTransmitting"
-          :title="tx.isTransmitting ? 'Take off air before switching folders' : ''"
+          :disabled="tx.isTransmitting || sessionPlayback.tidalLockEnabled"
+          :title="sessionPlayback.tidalLockEnabled ? 'Disengage Tidal Lock to pick a folder manually' : (tx.isTransmitting ? 'Take off air before switching folders' : '')"
           @change="onFolderChange"
         >
           <option value="" disabled>Select a folder...</option>
@@ -336,13 +343,26 @@ function formatLastFrame(value?: string | null) {
       <button
         type="button"
         :class="{ secondary: tx.isTransmitting }"
-        :disabled="tx.isBusy || (!tx.isTransmitting && !selectedSession?.isActive)"
-        :title="!selectedSession?.isActive ? 'Stage a clip in the Media Browser and use Push On Air in the On Air Queue below' : ''"
+        :disabled="sessionPlayback.tidalLockEnabled || tx.isBusy || (!tx.isTransmitting && !selectedSession?.isActive)"
+        :title="sessionPlayback.tidalLockEnabled ? 'Disengage Tidal Lock to control on-air state manually' : (!selectedSession?.isActive ? 'Stage a clip in the Media Browser and use Push On Air in the On Air Queue below' : '')"
         @click="toggleOnAir"
       >
         {{ tx.isTransmitting ? "Take Off Air" : "Push On Air (Live)" }}
       </button>
+      <button
+        type="button"
+        class="tidal-lock"
+        :class="{ active: sessionPlayback.tidalLockEnabled }"
+        :aria-pressed="sessionPlayback.tidalLockEnabled"
+        :title="sessionPlayback.tidalLockEnabled ? 'Disengage Tidal Lock' : 'Engage Tidal Lock — automatically follow and push the active recording live'"
+        @click="sessionPlayback.toggleTidalLock"
+      >
+        {{ sessionPlayback.tidalLockEnabled ? "Tidal Lock: On" : "Tidal Lock" }}
+      </button>
     </div>
+    <p v-if="sessionPlayback.tidalLockEnabled" class="tidal-lock-status">
+      {{ selectedSession?.isActive ? `Following ${sessionPlayback.selectedFolder} — auto on air` : "Waiting for a recording to start..." }}
+    </p>
 
     <div class="onair-cue" v-if="sessionPlayback.cuedClip">
       <h3>On Air Queue</h3>

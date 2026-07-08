@@ -24,7 +24,7 @@ class ObsIngestService {
       startedAt: null,
       inputUrl: null,
       outputPattern: null,
-      segmentSeconds: 300,
+      segmentSeconds: 120,
       container: "mp4",
       backupPath: null,
       backupAvailable: false,
@@ -49,7 +49,7 @@ class ObsIngestService {
       return { recordingStatus: this.recordingStatus };
     }
 
-    const segmentSeconds = clamp(Number(request.segmentSeconds || 300), 10, 3600);
+    const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
     // One folder per recording session, named after the local time the session started.
@@ -246,7 +246,7 @@ class ObsIngestService {
     if (!this.sessionFolderName) return;
 
     const sessionDir = path.join(this.recordingsPath, this.sessionFolderName);
-    const targetDuration = Math.max(1, Math.round(this.recordingStatus.segmentSeconds || 300));
+    const targetDuration = Math.max(1, Math.round(this.recordingStatus.segmentSeconds || 120));
 
     try {
       await writeTxPlaylist(sessionDir, targetDuration, this.ffmpegExited);
@@ -439,7 +439,7 @@ async function reconcileUnownedTxPlaylists(recordingsPath, isOwnedActiveSession)
       }
     }
 
-    await writeTxPlaylist(sessionDir, 300, ffmpegExited).catch(() => {});
+    await writeTxPlaylist(sessionDir, 120, ffmpegExited).catch(() => {});
   }
 }
 
