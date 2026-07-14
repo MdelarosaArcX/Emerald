@@ -12,6 +12,12 @@ const durationTimecode = computed({
     recorder.settings.segmentSeconds = parseTimecode(value);
   },
 });
+const broadcastDelayTimecode = computed({
+  get: () => formatTimecode(recorder.settings.broadcastDelaySeconds),
+  set: (value: string) => {
+    recorder.settings.broadcastDelaySeconds = parseTimecode(value);
+  },
+});
 
 watch(
   () => recorder.settings,
@@ -58,6 +64,11 @@ function pad(value: number) {
       <label class="field-row">
         <span>Set Duration</span>
         <input v-model="durationTimecode" class="compact-input" inputmode="numeric" />
+      </label>
+
+      <label class="field-row" title="Deliberate gap between capturing a segment and it becoming eligible to go on air (Tidal Lock / Push On Air) — a review window before it airs. 00:00:00:00 disables it.">
+        <span>Broadcast Delay</span>
+        <input v-model="broadcastDelayTimecode" class="compact-input" inputmode="numeric" />
       </label>
 
       <label class="field-row">

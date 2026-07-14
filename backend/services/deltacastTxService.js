@@ -10,6 +10,10 @@ class DeltacastTxService {
     return this.request("GET", "/tx/status");
   }
 
+  async captureStatus() {
+    return this.request("GET", "/capture/status");
+  }
+
   async start(sourceUrl, { live = false, loop = true } = {}) {
     return this.request("POST", "/tx/start", { sourceUrl, live, loop });
   }

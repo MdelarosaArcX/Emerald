@@ -14,10 +14,12 @@ const { normalizeFfmpegPath } = require("./services/obsRecordingService");
 const { ObsIngestService, TX_LIVE_PLAYLIST_NAME, startOrphanTxPlaylistWatcher } = require("./services/obsIngestService");
 const { RtmpIngestService } = require("./services/rtmpIngestService");
 const { RtmpOutService } = require("./services/rtmpOutService");
-const { WebrtcPreviewService } = require("./services/webrtcPreviewService");
+const { WebrtcPreviewService, stopSharedMediaMtx } = require("./services/webrtcPreviewService");
 const { probeObsStream } = require("./services/obsStreamProbeService");
 const { runtimeServices } = require("./services/runtimeServices");
 const { DeltacastTxService } = require("./services/deltacastTxService");
+const { TimecodeLogService } = require("./services/timecodeLogService");
+const { logEvent } = require("./services/eventLogService");
 
 const contentRoot = __dirname;
 const webRoot = path.join(contentRoot, "wwwroot");
@@ -42,6 +44,34 @@ const rtmpOut = new RtmpOutService();
 const webrtcPreview = new WebrtcPreviewService();
 const deltacastTx = new DeltacastTxService();
 rtmpIngest.start();
+
+// DeltacastCaptureService's TX decode process publishes its own low-latency WebRTC preview
+// directly to MediaMTX via RTSP (see DeltacastTxService.cs's PreviewRelayUrl) — mirroring the
+// exact same decoded frames it feeds to the SDI board, so this preview can't drift from the
+// source *timeline* the way independently decoding it a second time (e.g. via HLS) could. It
+// still runs ahead of the physical TX6 output in wall-clock terms (the SDI path has buffering
+// stages this WebRTC path doesn't share) — see SessionPlaybackDeck.vue's operator-tunable
+// playoutDelayHint for the compensation. Node doesn't manage an ffmpeg process for this one
+// (unlike webrtcPreview above) since TX's own process publishes/unpublishes on its own as it
+// starts/stops — this is just the static WHEP URL for it.
+const onAirPreviewWhepUrl = `http://${process.env.MEDIAMTX_PUBLIC_HOST || "127.0.0.1"}:${Number(process.env.MEDIAMTX_WHEP_PORT || 8889)}/live/onair/whep`;
+
+const timecodeLog = new TimecodeLogService(deltacastTx);
+timecodeLog.start();
+
+// MediaMTX previously only ever started lazily, the first time someone clicked "Start" on the
+// Capture page's own preview (webrtcPreview.start() below calls ensureMediaMtxRunning() itself).
+// Now that TX's own ffmpeg process publishes RTSP directly to MediaMTX with no Node-managed relay
+// in between, MediaMTX has to already be up *before* TX ever tries to push on air — otherwise
+// ffmpeg blocks trying to open that RTSP output and never gets to producing the raw-frame output
+// the SDI board actually needs either, breaking the real transmission, not just the preview.
+webrtcPreview.ensureMediaMtxRunning();
+Promise.all([
+  webrtcPreview.waitForMediaMtxReady(webrtcPreview.rtspPort),
+  webrtcPreview.waitForMediaMtxReady(webrtcPreview.whepPort),
+]).catch((error) => {
+  console.error("MediaMTX did not become ready at startup:", error.message);
+});
 
 // Keeps any emerald-tx-live.m3u8 left orphaned by a prior crash/restart in sync with its actual
 // .ts segments (or finalized once it's gone idle), so playback/TX can't get stuck waiting forever
@@ -276,6 +306,10 @@ function registerRoutes(server) {
 
   server.post("/api/webrtc-preview/stop", async () => webrtcPreview.stop());
 
+  // Static — nothing to start/stop from here, see the comment where onAirPreviewWhepUrl is
+  // declared. Whether anything is actually publishing to it depends entirely on tx.isTransmitting.
+  server.get("/api/onair-preview/status", async () => ({ whepUrl: onAirPreviewWhepUrl }));
+
   server.post("/api/obs-stream/probe", async (request) => probeObsStream(request.body || {}));
 
   server.get("/api/rtmp-out/status", async () => rtmpOut.status);
@@ -301,6 +335,70 @@ function registerRoutes(server) {
     } catch (error) {
       return reply.code(502).send({ message: error.message });
     }
+  });
+
+  // Network-facing timecode/health endpoint — meant for external systems on the LAN (not just
+  // this app's own frontend) to poll, e.g. for sync/reference purposes. `timecode` is plain live
+  // wall-clock time (same value the Capture page's own on-screen timecode shows). `onAir.timecode`
+  // is different on purpose: when TX is playing the current session's broadcast-delayed live
+  // playlist, what's actually on air right now was captured `broadcastDelaySeconds` ago, not
+  // "now" — so it's offset backward by that amount rather than just echoing `timecode`. The
+  // `delaySeconds` fields are each pipeline's own "time since it last actually processed a frame"
+  // — a real, hardware-driven staleness signal (near 0 when healthy, growing if signal/output is
+  // lost), not a measure of encode/network/buffering latency, which isn't independently
+  // instrumented — that's what broadcastDelaySeconds/onAirTimecode is for.
+  server.get("/api/capture/timecode", async () => {
+    const now = new Date();
+    const fps = 25;
+
+    const [captureStatus, txStatus] = await Promise.all([
+      deltacastTx.captureStatus().catch(() => null),
+      deltacastTx.status().catch(() => null),
+    ]);
+
+    const delaySecondsSince = (lastFrameAt) => {
+      if (!lastFrameAt) return null;
+      return Math.max(0, (now.getTime() - new Date(lastFrameAt).getTime()) / 1000);
+    };
+
+    const recordingStatus = obsIngest.recordingStatus;
+    const broadcastDelaySeconds = recordingStatus?.broadcastDelaySeconds || 0;
+    // Only true while TX is actually playing the *current* session's delayed live feed — a
+    // single clip or a finished-session loop isn't "capture from N seconds ago", it's old
+    // footage with no live relationship to worry about, so it just echoes the live timecode.
+    const isOnAirFromCurrentSessionLiveDelay = Boolean(
+      recordingStatus?.isRecording &&
+      txStatus?.isTransmitting &&
+      typeof txStatus?.sourceUrl === "string" &&
+      txStatus.sourceUrl.includes(obsIngest.sessionFolderName || "") &&
+      txStatus.sourceUrl.endsWith(TX_LIVE_PLAYLIST_NAME)
+    );
+    const onAirDelaySeconds = isOnAirFromCurrentSessionLiveDelay ? broadcastDelaySeconds : 0;
+    const onAirTimecode = formatWallClockTimecode(new Date(now.getTime() - onAirDelaySeconds * 1000), fps);
+
+    return {
+      timecode: formatWallClockTimecode(now, fps),
+      timestamp: now.toISOString(),
+      fps,
+      capture: {
+        isCapturing: Boolean(captureStatus?.isCapturing),
+        startedAt: captureStatus?.startedAt ?? null,
+        framesReceived: captureStatus?.framesReceived ?? 0,
+        framesDropped: captureStatus?.framesDropped ?? 0,
+        lastFrameAt: captureStatus?.lastFrameAt ?? null,
+        delaySeconds: delaySecondsSince(captureStatus?.lastFrameAt),
+      },
+      onAir: {
+        isTransmitting: Boolean(txStatus?.isTransmitting),
+        startedAt: txStatus?.startedAt ?? null,
+        framesSent: txStatus?.framesSent ?? 0,
+        framesDropped: txStatus?.framesDropped ?? 0,
+        lastFrameAt: txStatus?.lastFrameAt ?? null,
+        delaySeconds: delaySecondsSince(txStatus?.lastFrameAt),
+        timecode: onAirTimecode,
+        broadcastDelaySeconds: onAirDelaySeconds,
+      },
+    };
   });
 
   server.post("/api/tx/start", async (request, reply) => {
@@ -330,7 +428,9 @@ function registerRoutes(server) {
       }
 
       try {
-        return await deltacastTx.start(filePath, { live: false, loop: false });
+        const status = await deltacastTx.start(filePath, { live: false, loop: false });
+        logEvent(`On-air started — clip=${folder}/${requestedFileName}`);
+        return status;
       } catch (error) {
         return reply.code(502).send({ message: error.message });
       }
@@ -355,7 +455,9 @@ function registerRoutes(server) {
       }
 
       try {
-        return await deltacastTx.start(txPlaylistPath, { live: true });
+        const status = await deltacastTx.start(txPlaylistPath, { live: true });
+        logEvent(`On-air started — live folder=${folder}`);
+        return status;
       } catch (error) {
         return reply.code(502).send({ message: error.message });
       }
@@ -382,7 +484,9 @@ function registerRoutes(server) {
     await fs.promises.writeFile(playlistPath, playlistContent, "utf8");
 
     try {
-      return await deltacastTx.start(playlistPath);
+      const status = await deltacastTx.start(playlistPath);
+      logEvent(`On-air started — finished session folder=${folder}`);
+      return status;
     } catch (error) {
       return reply.code(502).send({ message: error.message });
     }
@@ -414,6 +518,8 @@ const shutdown = () => {
   rtmpIngest.stop();
   rtmpOut.stop();
   webrtcPreview.stopAll();
+  timecodeLog.stop();
+  stopSharedMediaMtx();
   runtimeServices.close()
     .finally(() => app.close())
     .finally(() => process.exit(0));
@@ -421,6 +527,12 @@ const shutdown = () => {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+function formatWallClockTimecode(date, fps) {
+  const pad = (value) => String(Math.trunc(value)).padStart(2, "0");
+  const frames = Math.floor((date.getMilliseconds() / 1000) * fps);
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
+}
 
 function resolveListenTarget(argv, env) {
   const urlsArgIndex = argv.findIndex((arg) => arg === "--urls");

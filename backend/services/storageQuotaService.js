@@ -95,8 +95,66 @@ async function enforceFolderQuota(rootDir, limitBytes, excludeFolderName) {
   }
 }
 
+// Trims the oldest *already-finished* segments of the currently-recording session itself, once
+// evicting other finished sessions alone isn't enough to get back under the limit — the active
+// session is never stopped (per the operator's requirement that recording must keep running no
+// matter what), so if it's the only thing left, or it's simply growing faster than old sessions
+// can be freed, its own oldest footage has to give way instead. The highest segment index across
+// all three output types (archival .mov, playback .mp4, HLS .ts) is presumed still being actively
+// written by FFmpeg and is never touched, even if the folder is still over quota afterward.
+async function trimActiveSessionSegments(sessionDir, limitBytes, currentTotalBytes) {
+  if (!limitBytes || currentTotalBytes <= limitBytes) return currentTotalBytes;
+
+  let files;
+  try {
+    files = await fs.promises.readdir(sessionDir);
+  } catch {
+    return currentTotalBytes;
+  }
+
+  const patterns = [/^emerald-(\d+)\.mov$/i, /^emerald-(\d+)\.mp4$/i, /^emerald-tx-(\d+)\.ts$/i];
+
+  // Groups filenames by segment index across all three output types, so a given index's
+  // mov/mp4/ts trio is always evicted together — never leaves one output type's file for an
+  // index sitting around after the other two have already been deleted for it.
+  const byIndex = new Map();
+  for (const fileName of files) {
+    for (const pattern of patterns) {
+      const match = pattern.exec(fileName);
+      if (match) {
+        const index = Number(match[1]);
+        if (!byIndex.has(index)) byIndex.set(index, []);
+        byIndex.get(index).push(fileName);
+        break;
+      }
+    }
+  }
+
+  const indexes = [...byIndex.keys()].sort((a, b) => a - b);
+  const currentIndex = indexes[indexes.length - 1];
+
+  let total = currentTotalBytes;
+  for (const index of indexes) {
+    if (index === currentIndex || total <= limitBytes) break;
+
+    for (const fileName of byIndex.get(index)) {
+      const filePath = path.join(sessionDir, fileName);
+      try {
+        const stat = await fs.promises.stat(filePath);
+        await fs.promises.rm(filePath, { force: true });
+        total -= stat.size;
+      } catch {
+        // Already gone or locked — move on to the next file/index.
+      }
+    }
+  }
+
+  return total;
+}
+
 module.exports = {
   parseSizeLimit,
   getDirectorySize,
   enforceFolderQuota,
+  trimActiveSessionSegments,
 };

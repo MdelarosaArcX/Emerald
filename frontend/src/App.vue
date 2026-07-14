@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useRoute } from "vue-router";
 import { useRecorderStore } from "./stores/recorder";
 import { useBroadcastStore } from "./stores/broadcast";
 
+const route = useRoute();
 const recorder = useRecorderStore();
 const broadcast = useBroadcastStore();
 
@@ -14,10 +16,14 @@ const statusLabel = computed(() => {
 });
 
 const isLive = computed(() => recorder.isRecording || broadcast.isBroadcasting);
+const chromeless = computed(() => Boolean(route.meta.chromeless));
 </script>
 
 <template>
-  <main class="app-shell">
+  <main v-if="chromeless" class="chromeless-shell">
+    <router-view />
+  </main>
+  <main v-else class="app-shell">
     <header class="topbar">
       <a class="brand" href="/">Emerald Capture</a>
       <nav class="primary-nav" aria-label="Primary">
@@ -36,3 +42,12 @@ const isLive = computed(() => recorder.isRecording || broadcast.isBroadcasting);
     <router-view />
   </main>
 </template>
+
+<style>
+.chromeless-shell {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+}
+</style>

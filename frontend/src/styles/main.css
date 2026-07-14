@@ -574,6 +574,15 @@ dd {
   letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
   line-height: 25px;
+  white-space: nowrap;
+}
+
+.delay-readout {
+  margin-left: 8px;
+  font-size: 0.78rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
 }
 
 .record-label {
@@ -593,6 +602,36 @@ dd {
   height: 13px;
   border-radius: 50%;
   background: #ffffff;
+}
+
+.audio-indicator {
+  justify-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 25px;
+  padding: 0 12px;
+  border-radius: 4px;
+  background: #3a3a3a;
+  color: #b3b3b3;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.audio-indicator i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #7a7a7a;
+}
+
+.audio-indicator.active {
+  background: #1f5c3a;
+  color: #ffffff;
+}
+
+.audio-indicator.active i {
+  background: #4ade80;
 }
 
 .capture-meta {

@@ -6,6 +6,7 @@ type RecorderStatus = {
   inputUrl: string | null;
   outputPattern: string | null;
   segmentSeconds: number;
+  broadcastDelaySeconds: number;
   container: string;
   lastMessage: string | null;
 };
@@ -41,6 +42,10 @@ type RecorderSettings = {
   fps: string;
   container: string;
   segmentSeconds: number;
+  // Deliberate gap between "captured" and "eligible to go on air" (Tidal Lock / Push On Air both
+  // read the live TX playlist, which withholds segments until they're this old) — e.g. so a
+  // producer has a window to catch and cut something before it airs. 0 disables it.
+  broadcastDelaySeconds: number;
   videoCodec: string;
   audioCodec: string;
   videoBitrate: string;
@@ -56,6 +61,7 @@ const defaultSettings: RecorderSettings = {
   fps: "25",
   container: "mov",
   segmentSeconds: 120,
+  broadcastDelaySeconds: 60,
   videoCodec: "ProRes 422",
   audioCodec: "AAC",
   videoBitrate: "5000 kbps",

@@ -1,0 +1,21 @@
+[2026-07-10T13:14:43.722Z] [tc 23:14:43:18] Recording started — folder=emerald071020262314, segmentSeconds=120, broadcastDelaySeconds=0
+[2026-07-10T13:15:32.029Z] [tc 23:15:32:00] On-air started — live folder=emerald071020262314
+[2026-07-10T13:39:14.381Z] [tc 23:39:14:09] Recording started — folder=emerald071020262339, segmentSeconds=120, broadcastDelaySeconds=60
+[2026-07-10T13:40:28.294Z] [tc 23:40:28:07] On-air started — live folder=emerald071020262339
+[2026-07-10T13:56:51.631Z] [tc 23:56:51:15] Recording started — folder=emerald071020262356, segmentSeconds=120, broadcastDelaySeconds=0
+[2026-07-10T13:57:03.455Z] [tc 23:57:03:11] On-air started — live folder=emerald071020262356
+[2026-07-10T13:57:29.381Z] [tc 23:57:29:09] On-air started — live folder=emerald071020262356
+[2026-07-10T14:00:52.072Z] [tc 00:00:52:01] Recording started — folder=emerald071120260000, segmentSeconds=120, broadcastDelaySeconds=0
+[2026-07-10T14:01:03.481Z] [tc 00:01:03:12] On-air started — live folder=emerald071120260000
+[2026-07-10T14:01:37.740Z] [tc 00:01:37:18] On-air started — live folder=emerald071120260000
+[2026-07-10T14:05:04.495Z] [tc 00:05:04:12] Recording started — folder=emerald071120260005, segmentSeconds=120, broadcastDelaySeconds=60
+[2026-07-10T14:06:16.573Z] [tc 00:06:16:14] On-air started — live folder=emerald071120260005
+[2026-07-10T14:22:20.509Z] [tc 00:22:20:12] Recording started — folder=emerald071120260022, segmentSeconds=120, broadcastDelaySeconds=10
+[2026-07-10T14:22:42.365Z] [tc 00:22:42:09] On-air started — live folder=emerald071120260022
+[2026-07-10T14:22:55.942Z] [tc 00:22:55:23] On-air started — live folder=emerald071120260022
+[2026-07-10T14:23:58.240Z] [tc 00:23:58:06] Recording started — folder=emerald071120260023, segmentSeconds=120, broadcastDelaySeconds=60
+[2026-07-10T14:25:53.925Z] [tc 00:25:53:23] On-air started — live folder=emerald071120260023
+[2026-07-13T03:19:00.998Z] [tc 13:19:00:24] Recording started — folder=emerald071320261319, segmentSeconds=120, broadcastDelaySeconds=60
+[2026-07-13T03:20:10.397Z] [tc 13:20:10:09] On-air started — live folder=emerald071320261319
+[2026-07-14T02:55:23.869Z] [tc 12:55:23:21] Recording started — folder=emerald071420261255, segmentSeconds=120, broadcastDelaySeconds=60
+[2026-07-14T02:56:44.109Z] [tc 12:56:44:02] On-air started — live folder=emerald071420261255

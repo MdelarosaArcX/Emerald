@@ -3,7 +3,8 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeFfmpegPath } = require("./obsRecordingService");
 const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
-const { parseSizeLimit, enforceFolderQuota } = require("./storageQuotaService");
+const { parseSizeLimit, getDirectorySize, enforceFolderQuota, trimActiveSessionSegments } = require("./storageQuotaService");
+const { logEvent } = require("./eventLogService");
 
 const MAINTENANCE_INTERVAL_MS = 5000;
 
@@ -14,6 +15,15 @@ const MAINTENANCE_INTERVAL_MS = 5000;
 // 0. Node owns this second copy instead: it rewrites the file in place (open+truncate+write, no
 // rename) on every maintenance tick, which a concurrent reader picks up fine on Windows.
 const TX_LIVE_PLAYLIST_NAME = "emerald-tx-live.m3u8";
+
+// Deliberately independent of the archival segment_time (the 2-minute .mov/.mp4 clip length): the
+// HLS muxer doesn't create/write its current .ts file on disk until that segment closes (verified
+// empirically — with hls_time equal to the 2-minute archival duration, emerald-tx-000.ts didn't
+// exist at all until t=120s, the exact same instant as emerald-001.mov/mp4 appearing). Combined
+// with our own "only list *finished* segments" rule in writeTxPlaylist(), that meant nothing was
+// ever playable on TX until a full *2* archival segments had elapsed, not 1. Short HLS segments
+// (standard practice for live HLS) make the first .ts appear within a few seconds instead.
+const TX_HLS_SEGMENT_SECONDS = 4;
 
 class ObsIngestService {
   constructor(recordingsPath) {
@@ -50,6 +60,12 @@ class ObsIngestService {
     }
 
     const segmentSeconds = clamp(Number(request.segmentSeconds || 120), 10, 3600);
+    // Deliberate gap between "captured" and "eligible to go on air" — e.g. so a producer has a
+    // window to catch and cut something before it airs. 0 disables it (segments go live as soon
+    // as they're finished, the previous behavior). Independent of segmentSeconds/the 2-minute
+    // archival clip length — this only affects what's listed in emerald-tx-live.m3u8, so TX and
+    // the Playback Deck stay ~this far behind the actual live capture at all times.
+    const broadcastDelaySeconds = clamp(Number(request.broadcastDelaySeconds ?? 0), 0, 3600);
     const ffmpegPath = normalizeFfmpegPath(request.ffmpegPath);
     const inputUrl = normalizeInputUrl(request.inputUrl);
     // One folder per recording session, named after the local time the session started.
@@ -82,8 +98,16 @@ class ObsIngestService {
       ...buildUdpInputArgs(inputUrl),
       "-i", inputUrl,
 
+      // Audio (once the Deltacast pipeline has it — CaptureOptions.EnableAudio on the C# side,
+      // still off by default) rides in as an AAC track on this same input, so it's re-encoded
+      // to AAC here rather than passed through — ProRes archival wants a real codec choice, not
+      // whatever the delivery-side bitrate happens to be. "?" makes the map optional so this
+      // stays a harmless no-op (exactly today's video-only behavior) until audio actually exists
+      // upstream.
       "-map", "0:v:0",
+      "-map", "0:a:0?",
       "-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le",
+      "-c:a", "aac", "-b:a", "192k",
       "-f", "segment",
       "-segment_time", String(segmentSeconds),
       "-reset_timestamps", "1",
@@ -91,6 +115,9 @@ class ObsIngestService {
       "-segment_format", "mov",
       archivalOutputPattern,
 
+      // "-map 0" + "-c copy" already carries audio through automatically once the input has an
+      // AAC track — no change needed here for that; today it's a harmless no-op specifically
+      // because the input never has one yet.
       "-map", "0",
       "-c", "copy",
       "-f", "segment",
@@ -103,7 +130,7 @@ class ObsIngestService {
       "-map", "0",
       "-c", "copy",
       "-f", "hls",
-      "-hls_time", String(segmentSeconds),
+      "-hls_time", String(TX_HLS_SEGMENT_SECONDS),
       "-hls_list_size", "0",
       // "event" tells players (hls.js, Safari) this playlist only ever grows — segments are
       // never removed — so they can safely start at position 0 and keep extending playback as
@@ -161,6 +188,7 @@ class ObsIngestService {
       archivalOutputPattern,
       txPlaylistPath,
       segmentSeconds,
+      broadcastDelaySeconds,
       container: "mp4",
       backupPath,
       backupAvailable: Boolean(backupDir),
@@ -170,6 +198,7 @@ class ObsIngestService {
     this.sessionFolderName = sessionFolderName;
     this.recordingSizeLimitBytes = recordingSizeLimitBytes;
     this.storageSizeLimitBytes = storageSizeLimitBytes;
+    this.broadcastDelaySeconds = broadcastDelaySeconds;
     this.copiedBackupSegments = new Set();
 
     if (backupDir) {
@@ -183,6 +212,8 @@ class ObsIngestService {
     this.maintenanceHandle.unref?.();
 
     await waitForFfmpegStartup(startedProcess, ffmpegPath, () => this.recordingStatus.lastMessage, inputUrl);
+
+    logEvent(`Recording started — folder=${sessionFolderName}, segmentSeconds=${segmentSeconds}, broadcastDelaySeconds=${broadcastDelaySeconds}`);
 
     return { recordingStatus: this.recordingStatus };
   }
@@ -234,8 +265,39 @@ class ObsIngestService {
 
     await enforceFolderQuota(this.recordingsPath, this.recordingSizeLimitBytes, this.sessionFolderName);
 
+    // Evicting other, finished sessions above may not be enough — a single long recording can
+    // exceed the whole-folder limit entirely on its own, with no other sessions left to delete.
+    // Recording must never stop to enforce the quota, so once nothing else is left to evict, fall
+    // back to trimming the active session's own oldest *finished* segments (never the one FFmpeg
+    // is still writing) until the folder is back under the limit.
+    if (this.recordingSizeLimitBytes && this.sessionFolderName) {
+      const totalBytes = await getDirectorySize(this.recordingsPath);
+
+      if (totalBytes > this.recordingSizeLimitBytes) {
+        const sessionDir = path.join(this.recordingsPath, this.sessionFolderName);
+        await trimActiveSessionSegments(sessionDir, this.recordingSizeLimitBytes, totalBytes);
+        // Re-sync immediately so the TX playlist never references a just-deleted .ts segment in
+        // the window before the next maintenance tick.
+        await this.updateLiveTxPlaylist();
+      }
+    }
+
     if (this.backupDir) {
       await enforceFolderQuota(this.backupDir, this.storageSizeLimitBytes, this.sessionFolderName);
+
+      // Same gap as RECORDING_SIZE_LIMIT above, same fix: evicting other finished sessions'
+      // backup copies alone isn't enough once a single long recording's own mirrored ProRes
+      // segments exceed the backup drive's limit by themselves. Trim its oldest already-copied
+      // (and, per syncBackupSegments, already-finished) segments instead of ever pausing the
+      // backup sync or the recording itself.
+      if (this.storageSizeLimitBytes && this.sessionFolderName) {
+        const backupTotalBytes = await getDirectorySize(this.backupDir);
+
+        if (backupTotalBytes > this.storageSizeLimitBytes) {
+          const backupSessionDir = path.join(this.backupDir, this.sessionFolderName);
+          await trimActiveSessionSegments(backupSessionDir, this.storageSizeLimitBytes, backupTotalBytes);
+        }
+      }
     }
   }
 
@@ -246,10 +308,9 @@ class ObsIngestService {
     if (!this.sessionFolderName) return;
 
     const sessionDir = path.join(this.recordingsPath, this.sessionFolderName);
-    const targetDuration = Math.max(1, Math.round(this.recordingStatus.segmentSeconds || 120));
 
     try {
-      await writeTxPlaylist(sessionDir, targetDuration, this.ffmpegExited);
+      await writeTxPlaylist(sessionDir, TX_HLS_SEGMENT_SECONDS, this.ffmpegExited, this.broadcastDelaySeconds || 0);
     } catch (error) {
       this.recordingStatus = { ...this.recordingStatus, lastMessage: `Unable to update TX playlist: ${error.message}` };
     }
@@ -328,8 +389,8 @@ module.exports = {
 
 // Builds emerald-tx-live.m3u8's content from whatever emerald-tx-NNN.ts segments exist in
 // `sessionDir`, then writes it in place (no rename — see the comment on TX_LIVE_PLAYLIST_NAME).
-// Returns false if there are no finished segments to write yet.
-async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited) {
+// Returns false if there are no eligible segments to write yet.
+async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited, delaySeconds = 0) {
   const files = await fs.promises.readdir(sessionDir);
 
   const pattern = /^emerald-tx-(\d+)\.ts$/;
@@ -346,13 +407,40 @@ async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited) {
   const finishedSegments = ffmpegExited ? segments : segments.slice(0, -1);
   if (finishedSegments.length === 0) return false;
 
+  // Broadcast delay: while still actively recording, hold each segment out of the live playlist
+  // until it's at least `delaySeconds` old (by file mtime, so this is robust to any timing
+  // irregularities rather than assuming exactly targetDuration per segment) — a deliberate,
+  // rolling gap between "captured" and "eligible to air", e.g. so a producer has a window to
+  // catch and cut something before it goes out. Once recording stops there's nothing left to
+  // review, so release everything immediately instead of trickling out the last delaySeconds'
+  // worth after the operator has already stopped.
+  let eligibleSegments = finishedSegments;
+  if (delaySeconds > 0 && !ffmpegExited) {
+    const cutoffMs = Date.now() - delaySeconds * 1000;
+    const withMtimes = await Promise.all(finishedSegments.map(async (segment) => {
+      try {
+        const stat = await fs.promises.stat(path.join(sessionDir, segment.fileName));
+        return { ...segment, mtimeMs: stat.mtimeMs };
+      } catch {
+        return null;
+      }
+    }));
+    eligibleSegments = withMtimes.filter((segment) => segment && segment.mtimeMs <= cutoffMs);
+  }
+
+  if (eligibleSegments.length === 0) return false;
+
   const lines = [
     "#EXTM3U",
     "#EXT-X-VERSION:3",
     `#EXT-X-TARGETDURATION:${targetDuration}`,
-    "#EXT-X-MEDIA-SEQUENCE:0",
+    // The storage quota's rolling-buffer trim (trimActiveSessionSegments) can delete the earliest
+    // .ts segments out from under a still-recording session, so the first listed segment's index
+    // is no longer reliably 0 — MEDIA-SEQUENCE must track whatever segment is actually first here,
+    // per the HLS spec, or players/ffmpeg's hls demuxer will mis-map segment numbering.
+    `#EXT-X-MEDIA-SEQUENCE:${eligibleSegments[0].index}`,
     "#EXT-X-PLAYLIST-TYPE:EVENT",
-    ...finishedSegments.flatMap((segment) => [`#EXTINF:${targetDuration.toFixed(6)},`, segment.fileName]),
+    ...eligibleSegments.flatMap((segment) => [`#EXTINF:${targetDuration.toFixed(6)},`, segment.fileName]),
   ];
 
   if (ffmpegExited) {
@@ -439,7 +527,7 @@ async function reconcileUnownedTxPlaylists(recordingsPath, isOwnedActiveSession)
       }
     }
 
-    await writeTxPlaylist(sessionDir, 120, ffmpegExited).catch(() => {});
+    await writeTxPlaylist(sessionDir, TX_HLS_SEGMENT_SECONDS, ffmpegExited).catch(() => {});
   }
 }
 

@@ -40,6 +40,11 @@ const video = ref<HTMLVideoElement | null>(null);
 const hasPlayback = ref(false);
 const isPaused = ref(true);
 const internalTimecode = ref("00:00:00:00");
+// Whether the WebRTC connection is actually receiving audio RTP packets right now — not just
+// whether an audio track/transceiver exists. A transceiver negotiates fine even when the
+// publisher never sends real audio (e.g. before the SDI audio pipeline exists at all), so
+// presence has to be measured from live stats, not inferred from the SDP.
+const audioDetected = ref(false);
 
 let pc: RTCPeerConnection | null = null;
 let webrtcSessionUrl: string | null = null;
@@ -47,11 +52,14 @@ let abortController: AbortController | null = null;
 let rafId: number | null = null;
 let reconnectTimer: number | null = null;
 let stallWatchdogHandle: number | null = null;
+let audioStatsHandle: number | null = null;
+let lastAudioPacketsReceived = 0;
 let lastFrameTime = -1;
 let lastFrameProgressAt = 0;
 
 const STALL_TIMEOUT_MS = 8000;
 const STALL_CHECK_INTERVAL_MS = 2000;
+const AUDIO_STATS_INTERVAL_MS = 2000;
 
 const mode = computed(() => props.variant || "library");
 // "capture" and "broadcast" are both live, wall-clock-driven decks — they only differ in the
@@ -69,7 +77,7 @@ const displayTimecode = computed(() => {
   return props.timecode || "00:00:00:00";
 });
 
-watch(() => props.src, loadSource, { immediate: true });
+watch(() => props.src, loadSource);
 
 // Background/inactive browser tabs throttle timers and can leave the decoder in a
 // frozen state — WebRTC's own reconnect logic can't reliably detect this since even
@@ -85,6 +93,11 @@ function handleVisibilityChange() {
 
 onMounted(() => {
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  // Explicit call instead of `watch(..., {immediate:true})`: the immediate callback fires
+  // during setup(), before the template ref is assigned, so it would always no-op on `src`
+  // values that are already non-empty at mount time (e.g. remounting this page while a
+  // preview/recording is still running elsewhere) and the preview would stay blank forever.
+  loadSource(props.src);
 });
 
 onBeforeUnmount(() => {
@@ -165,6 +178,7 @@ function teardownWebrtc() {
   abortController?.abort();
   abortController = null;
   stopStallWatchdog();
+  stopAudioStatsWatch();
 
   if (reconnectTimer !== null) {
     window.clearTimeout(reconnectTimer);
@@ -206,6 +220,7 @@ async function connectWebrtc(whepUrl: string) {
   pc = connection;
 
   connection.addTransceiver("video", { direction: "recvonly" });
+  connection.addTransceiver("audio", { direction: "recvonly" });
 
   connection.ontrack = (event) => {
     if (video.value) {
@@ -246,11 +261,53 @@ async function connectWebrtc(whepUrl: string) {
       webrtcSessionUrl = location ? new URL(location, whepUrl).toString() : null;
       await connection.setRemoteDescription({ type: "answer", sdp: answerSdp });
       startStallWatchdog();
+      startAudioStatsWatch(connection);
       return;
     }
 
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
+}
+
+// Polls WebRTC receive stats rather than trusting track/transceiver existence — a recvonly
+// audio transceiver negotiates successfully even when the publisher never actually sends
+// audio (true today, since nothing upstream embeds real audio yet), so "is there a track" is
+// not a reliable signal. Compares packetsReceived between ticks so a connection that goes
+// silent (publisher stops sending, even though the connection itself stays up) is reflected
+// too, not just the very first packet ever seen.
+function startAudioStatsWatch(connection: RTCPeerConnection) {
+  stopAudioStatsWatch();
+  lastAudioPacketsReceived = 0;
+
+  audioStatsHandle = window.setInterval(async () => {
+    const audioReceiver = connection.getReceivers().find((receiver) => receiver.track.kind === "audio");
+    if (!audioReceiver) {
+      audioDetected.value = false;
+      return;
+    }
+
+    try {
+      const stats = await audioReceiver.getStats();
+      let packetsReceived = 0;
+      stats.forEach((report) => {
+        if (report.type === "inbound-rtp" && report.kind === "audio") {
+          packetsReceived = report.packetsReceived ?? 0;
+        }
+      });
+      audioDetected.value = packetsReceived > lastAudioPacketsReceived;
+      lastAudioPacketsReceived = packetsReceived;
+    } catch {
+      audioDetected.value = false;
+    }
+  }, AUDIO_STATS_INTERVAL_MS);
+}
+
+function stopAudioStatsWatch() {
+  if (audioStatsHandle !== null) {
+    window.clearInterval(audioStatsHandle);
+    audioStatsHandle = null;
+  }
+  audioDetected.value = false;
 }
 
 // Backstop for the case where the connection reports "connected" but no frames are
@@ -373,6 +430,9 @@ function togglePlayback() {
     <div class="transport" :class="{ recording: isCapture }">
       <span v-if="isCapture && isRecording" class="record-label">
         <i></i> {{ transportLabel || (mode === "broadcast" ? "Broadcasting ..." : "Recording ...") }}
+      </span>
+      <span v-if="isCapture && hasPlayback" class="audio-indicator" :class="{ active: audioDetected }" :title="audioDetected ? 'Receiving audio' : 'No audio detected'">
+        <i></i> {{ audioDetected ? "Audio" : "No Audio" }}
       </span>
       <button
         type="button"

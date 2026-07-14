@@ -21,7 +21,8 @@ const SELECTED_FOLDER_STORAGE_KEY = "emerald.sessionPlayback.selectedFolder";
 // Tidal Lock lives on the store (not component state) so it stays engaged across page
 // navigation — SessionPlaybackDeck may unmount when you switch pages, but this Pinia store is
 // an app-wide singleton that doesn't. Persisted too, so a page refresh doesn't silently turn it
-// off either.
+// off (and desync the UI from TX, which keeps transmitting regardless of what the frontend
+// thinks) either.
 const TIDAL_LOCK_STORAGE_KEY = "emerald.sessionPlayback.tidalLockEnabled";
 
 export const useSessionPlaybackStore = defineStore("sessionPlayback", {
@@ -94,8 +95,16 @@ export const useSessionPlaybackStore = defineStore("sessionPlayback", {
         this.selectFolder(active.folder);
       }
 
-      // Already correctly on air for the currently active recording — nothing to do.
-      if (this.tidalLockedFolder === active.folder && tx.isTransmitting) return;
+      // TX might already be correctly on air for this exact folder — either because we started
+      // it ourselves earlier (tidalLockedFolder already matches), or because Tidal Lock just
+      // re-engaged after a page refresh and TX (a separate always-running hardware process)
+      // never actually stopped. tidalLockedFolder itself isn't persisted across a refresh, so
+      // without the sourceUrl check below every refresh would otherwise stop and immediately
+      // restart an already-correct feed, causing a needless on-air blip.
+      if (tx.isTransmitting && (this.tidalLockedFolder === active.folder || tx.status?.sourceUrl?.includes(active.folder))) {
+        this.tidalLockedFolder = active.folder;
+        return;
+      }
 
       if (tx.isTransmitting) {
         await tx.stop();
