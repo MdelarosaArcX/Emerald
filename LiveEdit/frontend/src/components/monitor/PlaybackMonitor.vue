@@ -4,12 +4,25 @@
  * clip's preview and file metadata.
  */
 import { usePlaybackStore } from '@/stores/playbackStore';
+import { useWhepPreview } from '@/composables/useWhepPreview';
+import { fetchOnAirPreviewWhepUrl } from '@/services/emeraldPreview';
 import { PlayCircleIcon, PauseCircleIcon } from '@heroicons/vue/24/solid';
 import { FilmIcon } from '@heroicons/vue/24/outline';
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 
 const playbackStore = usePlaybackStore();
 const info = computed(() => playbackStore.info);
+
+// Live video/audio from the main Emerald backend's on-air preview — a real physical SDI
+// loopback of what's actually being transmitted (RX5-sourced), independent of playbackStore
+// (which only tracks this app's own mock clip-playback state). useWhepPreview() tears itself
+// down on unmount.
+const { videoRef, connected: previewConnected, audioDetected, connect } = useWhepPreview();
+
+onMounted(async () => {
+  const whepUrl = await fetchOnAirPreviewWhepUrl();
+  if (whepUrl) connect(whepUrl);
+});
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -30,14 +43,25 @@ function formatDuration(seconds: number): string {
     </header>
 
     <div class="relative flex aspect-video items-center justify-center overflow-hidden rounded-lg border border-white/5 bg-black">
-      <div class="absolute inset-0 bg-grid-fade" />
-      <FilmIcon class="h-10 w-10 text-slate-700" />
+      <div v-if="!previewConnected" class="absolute inset-0 bg-grid-fade" />
+      <FilmIcon v-if="!previewConnected" class="h-10 w-10 text-slate-700" />
+      <video ref="videoRef" class="h-full w-full object-contain" autoplay muted playsinline />
       <div
-        v-if="info.isPlaying"
+        v-if="previewConnected"
         class="absolute left-2 top-2 flex items-center gap-1.5 rounded-md bg-black/60 px-2 py-1 backdrop-blur"
       >
         <span class="h-2 w-2 rounded-full bg-emerald-400 shadow-glow animate-pulseGlow" />
-        <span class="font-mono text-[11px] text-emerald-300">PLAYING</span>
+        <span class="font-mono text-[11px] text-emerald-300">ON AIR</span>
+      </div>
+      <div
+        v-if="previewConnected"
+        class="absolute left-2 bottom-2 flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 backdrop-blur"
+        :title="audioDetected ? 'Receiving audio' : 'No audio detected'"
+      >
+        <span class="h-1.5 w-1.5 rounded-full" :class="audioDetected ? 'bg-emerald-400' : 'bg-slate-600'" />
+        <span class="font-mono text-[10px]" :class="audioDetected ? 'text-emerald-300' : 'text-slate-500'">
+          {{ audioDetected ? 'AUDIO' : 'NO AUDIO' }}
+        </span>
       </div>
     </div>
 

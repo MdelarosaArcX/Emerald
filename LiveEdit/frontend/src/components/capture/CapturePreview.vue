@@ -4,6 +4,8 @@
  * and ingest control buttons (import / record / capture / snapshot / refresh).
  */
 import { useCaptureStore } from '@/stores/captureStore';
+import { useWhepPreview } from '@/composables/useWhepPreview';
+import { fetchCapturePreviewWhepUrl } from '@/services/emeraldPreview';
 import {
   ArrowPathIcon,
   ArrowUpTrayIcon,
@@ -12,10 +14,20 @@ import {
   StopCircleIcon,
   VideoCameraIcon,
 } from '@heroicons/vue/24/outline';
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 
 const captureStore = useCaptureStore();
 const info = computed(() => captureStore.info);
+
+// Live video/audio from the main Emerald backend's own capture preview (RX3-sourced) — separate
+// from captureStore, which only tracks this app's own mock recording metadata/state.
+// useWhepPreview() tears itself down on unmount, no need to do it again here.
+const { videoRef, connected: previewConnected, audioDetected, connect } = useWhepPreview();
+
+onMounted(async () => {
+  const whepUrl = await fetchCapturePreviewWhepUrl();
+  if (whepUrl) connect(whepUrl);
+});
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -48,14 +60,25 @@ async function handleRecordToggle(): Promise<void> {
     </header>
 
     <div class="relative flex aspect-video items-center justify-center overflow-hidden rounded-lg border border-white/5 bg-black">
-      <div class="absolute inset-0 bg-grid-fade" />
-      <FilmIcon class="h-10 w-10 text-slate-700" />
+      <div v-if="!previewConnected" class="absolute inset-0 bg-grid-fade" />
+      <FilmIcon v-if="!previewConnected" class="h-10 w-10 text-slate-700" />
+      <video ref="videoRef" class="h-full w-full object-contain" autoplay muted playsinline />
       <div
-        v-if="info.isCapturing"
+        v-if="previewConnected"
         class="absolute left-2 top-2 flex items-center gap-1.5 rounded-md bg-black/60 px-2 py-1 backdrop-blur"
       >
         <span class="h-2 w-2 animate-blink rounded-full bg-rose-500" />
         <span class="font-mono text-[11px] text-rose-400">LIVE</span>
+      </div>
+      <div
+        v-if="previewConnected"
+        class="absolute left-2 bottom-2 flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 backdrop-blur"
+        :title="audioDetected ? 'Receiving audio' : 'No audio detected'"
+      >
+        <span class="h-1.5 w-1.5 rounded-full" :class="audioDetected ? 'bg-emerald-400' : 'bg-slate-600'" />
+        <span class="font-mono text-[10px]" :class="audioDetected ? 'text-emerald-300' : 'text-slate-500'">
+          {{ audioDetected ? 'AUDIO' : 'NO AUDIO' }}
+        </span>
       </div>
       <div class="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300">
         {{ info.resolution }}
