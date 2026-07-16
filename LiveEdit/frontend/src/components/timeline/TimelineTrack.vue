@@ -31,6 +31,13 @@ function onClipChange(clipId: string, payload: { start: number; duration: number
       class="pointer-events-none absolute inset-0 z-10"
       style="background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0 8px, transparent 8px 16px)"
     />
+    <!-- Empty-lane drop affordance -->
+    <div
+      v-if="!track.clips.length"
+      class="pointer-events-none absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-rose-500/30 bg-rose-500/[0.04]"
+    >
+      <span class="rounded bg-rose-500/15 px-2 py-0.5 text-[10px] font-medium tracking-wide text-rose-300/80">Drop media to Insert</span>
+    </div>
     <TimelineClip
       v-for="clip in track.clips"
       :key="clip.id"

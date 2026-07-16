@@ -89,6 +89,44 @@ export const useTimelineStore = defineStore('timeline', {
       }
     },
 
+    /**
+     * Rebuilds the timeline around a clip loaded into the Program monitor: one video lane (with a
+     * thumbnail filmstrip) and one audio lane, both spanning the clip's real frame count at its
+     * real fps — so the ruler, playhead and scrubbing all operate frame-for-frame on that clip.
+     */
+    loadProgramClip(payload: { name: string; thumbnail: string; durationFrames: number; fps: number }): void {
+      const duration = Math.max(1, Math.round(payload.durationFrames));
+      const base = {
+        path: '',
+        start: 0,
+        trimIn: 0,
+        trimOut: duration,
+        duration,
+        effects: [],
+        opacity: 100,
+        rotation: 0,
+        scale: 100,
+        position: { x: 0, y: 0 },
+        speed: 1,
+        volume: 100,
+        locked: false,
+      };
+      const videoClip: Clip = { ...base, id: 'program-clip', name: payload.name, track: 'v1', color: '#14b8a6', type: 'video', thumbnail: payload.thumbnail };
+      const audioClip: Clip = { ...base, id: 'program-audio', name: `${payload.name} · audio`, track: 'a1', color: '#34d399', type: 'audio' };
+
+      this.timeline = {
+        id: 'program-timeline',
+        fps: payload.fps,
+        duration,
+        playhead: 0,
+        tracks: [
+          { id: 'v1', name: 'V1', kind: 'video', order: 0, height: 76, locked: false, visible: true, muted: false, solo: false, clips: [videoClip] },
+          { id: 'a1', name: 'A1', kind: 'audio', order: 1, height: 60, locked: false, visible: true, muted: false, solo: false, clips: [audioClip] },
+        ],
+      };
+      this.selectedClipId = 'program-clip';
+    },
+
     updateClip(clipId: string, patch: Partial<Clip>): void {
       const clip = this.allClips.find((c) => c.id === clipId);
       if (clip) Object.assign(clip, patch);

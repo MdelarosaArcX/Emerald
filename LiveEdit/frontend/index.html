@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><rect width=%2224%22 height=%2224%22 rx=%226%22 fill=%22%230a1012%22/><path d=%22M6 12l4 4 8-8%22 stroke=%22%2322e39a%22 stroke-width=%222.5%22 fill=%22none%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Display font for the brand wordmark & timecodes. Falls back to the mono
+         stack automatically if the network is unavailable (e.g. offline air-gapped
+         broadcast machines) — layout never depends on it loading. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
     <title>Emerald Live Edit</title>
   </head>
   <body class="bg-surface-950 text-slate-200 antialiased">

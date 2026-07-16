@@ -5,14 +5,16 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Deep navy-blue broadcast surface palette (keys unchanged so existing
+        // utility classes keep working — only the hues shift toward the mockup).
         surface: {
-          950: '#05080a',
-          900: '#0a1012',
-          850: '#0d1518',
-          800: '#111c1f',
-          700: '#162326',
-          600: '#1c2e32',
-          500: '#263d42',
+          950: '#050a16',
+          900: '#0a1324',
+          850: '#0d1830',
+          800: '#111f3c',
+          700: '#182a4d',
+          600: '#20375f',
+          500: '#294766',
         },
         emerald: {
           50: '#e9fff5',
@@ -44,15 +46,18 @@ export default {
       fontFamily: {
         sans: ['"Inter"', '"Segoe UI"', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', '"Consolas"', 'monospace'],
+        display: ['"Orbitron"', '"JetBrains Mono"', '"Consolas"', 'monospace'],
       },
       boxShadow: {
         glow: '0 0 12px 0 rgba(34, 227, 154, 0.45)',
         'glow-teal': '0 0 12px 0 rgba(23, 228, 219, 0.45)',
         'glow-lg': '0 0 24px 4px rgba(34, 227, 154, 0.35)',
+        'glow-rose': '0 0 12px 0 rgba(244, 63, 94, 0.5)',
         panel: '0 1px 0 0 rgba(255,255,255,0.03) inset, 0 0 0 1px rgba(255,255,255,0.04) inset',
       },
       backgroundImage: {
         'grid-fade': 'radial-gradient(circle at 50% 0%, rgba(23,228,219,0.08), transparent 60%)',
+        'app-glow': 'radial-gradient(1200px 480px at 50% -8%, rgba(23,228,219,0.10), transparent 70%)',
       },
       animation: {
         pulseGlow: 'pulseGlow 2s ease-in-out infinite',

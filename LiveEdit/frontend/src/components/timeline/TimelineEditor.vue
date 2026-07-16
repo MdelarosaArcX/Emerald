@@ -9,7 +9,9 @@ import TimelinePlayhead from '@/components/timeline/TimelinePlayhead.vue';
 import TimelineRuler from '@/components/timeline/TimelineRuler.vue';
 import TimelineTrack from '@/components/timeline/TimelineTrack.vue';
 import { useTimelineStore } from '@/stores/timelineStore';
+import { useTimecode } from '@/composables/useTimecode';
 import {
+  AdjustmentsHorizontalIcon,
   Bars3Icon,
   EyeIcon,
   EyeSlashIcon,
@@ -24,7 +26,12 @@ import { computed, ref } from 'vue';
 import draggable from 'vuedraggable';
 import type { Track } from '@/types/clip';
 
+defineProps<{ inspectorOpen?: boolean }>();
+const emit = defineEmits<{ toggleInspector: [] }>();
+
 const timelineStore = useTimelineStore();
+const { framesToTimecode } = useTimecode(timelineStore.fps);
+const playheadTimecode = computed(() => framesToTimecode(timelineStore.playhead));
 
 const BASE_PX_PER_FRAME = 3;
 const pixelsPerFrame = computed(() => BASE_PX_PER_FRAME * timelineStore.zoom);
@@ -72,8 +79,22 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
 <template>
   <section class="flex h-full flex-col rounded-xl border border-white/5 bg-surface-900/80 shadow-panel">
     <header class="flex shrink-0 items-center justify-between border-b border-white/5 px-3 py-2">
-      <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Timeline</h2>
+      <div class="flex items-center gap-3">
+        <span class="rounded-md border border-rose-500/50 bg-rose-500/15 px-2 py-1 font-mono text-xs font-semibold tracking-wider text-rose-300 shadow-glow-rose">
+          {{ playheadTimecode }}
+        </span>
+        <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Timeline</h2>
+      </div>
       <div class="flex items-center gap-2">
+        <button
+          class="flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-medium transition"
+          :class="inspectorOpen ? 'border-teal-400/50 bg-teal-400/10 text-teal-300' : 'border-white/5 text-slate-500 hover:text-slate-300'"
+          title="Toggle Video / Audio FX inspector"
+          @click="emit('toggleInspector')"
+        >
+          <AdjustmentsHorizontalIcon class="h-3.5 w-3.5" />
+          FX
+        </button>
         <button
           class="rounded-md border border-white/5 px-2 py-1 text-[10px] font-medium transition"
           :class="timelineStore.snapEnabled ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'text-slate-500 hover:text-slate-300'"
