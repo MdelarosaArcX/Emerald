@@ -82,6 +82,11 @@ class WebrtcPreviewService {
       "-map", "0:a:0?",
       "-c:v", "copy",
       "-c:a", "libopus", "-b:a", "128k", "-ar", "48000",
+      // The Opus transcode (real work) alongside a stream-copied video track (cheap) can drift
+      // enough under load to overflow ffmpeg's default 128-packet muxer buffer ("Too many packets
+      // buffered for output stream" / "Error submitting a packet to the muxer"), killing this
+      // relay outright — same fix as the ProRes archival leg in obsIngestService.js.
+      "-max_muxing_queue_size", "4096",
       // TCP avoids dynamic UDP RTP port negotiation which can fail silently on Windows.
       "-rtsp_transport", "tcp",
       "-f", "rtsp",

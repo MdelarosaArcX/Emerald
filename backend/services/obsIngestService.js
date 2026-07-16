@@ -8,6 +8,15 @@ const { logEvent } = require("./eventLogService");
 
 const MAINTENANCE_INTERVAL_MS = 5000;
 
+// New emerald-tx-NNN.ts segments land on disk every TX_HLS_SEGMENT_SECONDS (~4s), but if
+// emerald-tx-live.m3u8 only got rewritten on the general MAINTENANCE_INTERVAL_MS (5s) tick, TX's
+// decode ffmpeg — which can only discover a segment once the playlist *file* lists it, not once
+// it exists on disk — would run out of listed segments and stall for however much of that 5s
+// window was left, starving the SDI hardware's buffer queue (dropped-frame counts) until the
+// next tick caught it up. Refreshing far faster than segments actually close keeps a newly
+// finished segment visible to TX within a fraction of a second instead of up to ~5s late.
+const TX_PLAYLIST_REFRESH_INTERVAL_MS = 500;
+
 // Ffmpeg's own hls muxer output (emerald-tx.m3u8, written by the third recording output below)
 // updates itself by writing a temp file and renaming it over the target. On Windows, that
 // rename fails silently once another process (the TX decoder) has the file open for reading,
@@ -41,6 +50,8 @@ class ObsIngestService {
       lastMessage: null,
     };
     this.maintenanceHandle = null;
+    this.txPlaylistHandle = null;
+    this.maintenanceStopped = true;
     this.sessionFolderName = null;
     this.backupDir = null;
     this.copiedBackupSegments = new Set();
@@ -108,6 +119,12 @@ class ObsIngestService {
       "-map", "0:a:0?",
       "-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le",
       "-c:a", "aac", "-b:a", "192k",
+      // ProRes 422 at 1080p25 is CPU-heavy enough that this encoder can momentarily fall behind
+      // real-time under load from everything else running concurrently (capture, previews, TX) —
+      // ffmpeg's default 128-packet safety buffer ("Too many packets buffered for output stream")
+      // was tripping and aborting the whole process (mov/mp4/ts share this one ffmpeg instance).
+      // A larger queue gives it room to absorb bursts and catch back up instead of hard-failing.
+      "-max_muxing_queue_size", "4096",
       "-f", "segment",
       "-segment_time", String(segmentSeconds),
       "-reset_timestamps", "1",
@@ -115,11 +132,20 @@ class ObsIngestService {
       "-segment_format", "mov",
       archivalOutputPattern,
 
-      // "-map 0" + "-c copy" already carries audio through automatically once the input has an
-      // AAC track — no change needed here for that; today it's a harmless no-op specifically
-      // because the input never has one yet.
-      "-map", "0",
-      "-c", "copy",
+      // Video stays a cheap stream-copy, but audio can't: mp4's header (stsd atom) needs a known
+      // sample rate up front, and blindly "-c copy"-ing the live AAC track without ever decoding
+      // it left ffmpeg unable to determine that before opening the file ("sample rate not set" /
+      // "Could not write header"), which aborted this whole process (all three outputs share one
+      // ffmpeg invocation). Re-encoding forces ffmpeg to actually decode the stream and know its
+      // parameters, exactly like the ProRes leg above already does.
+      "-map", "0:v:0",
+      "-map", "0:a:0?",
+      "-c:v", "copy",
+      "-c:a", "aac", "-b:a", "192k",
+      // Cheap video copy alongside a real audio encode can drift enough under load to overflow
+      // ffmpeg's default 128-packet muxer buffer ("Too many packets buffered for output stream"),
+      // aborting the whole process — same failure mode observed on the capture preview relay.
+      "-max_muxing_queue_size", "4096",
       "-f", "segment",
       "-segment_time", String(segmentSeconds),
       "-reset_timestamps", "1",
@@ -127,8 +153,14 @@ class ObsIngestService {
       "-segment_format", "mp4",
       outputPattern,
 
-      "-map", "0",
-      "-c", "copy",
+      // Same fix as the mp4 leg above: blind "-c copy" of the live AAC track left ffmpeg unable
+      // to determine its sample rate before opening the HLS output, aborting the whole process.
+      // Re-encoding audio (video stays a cheap stream-copy) forces ffmpeg to actually decode it.
+      "-map", "0:v:0",
+      "-map", "0:a:0?",
+      "-c:v", "copy",
+      "-c:a", "aac", "-b:a", "192k",
+      "-max_muxing_queue_size", "4096",
       "-f", "hls",
       "-hls_time", String(TX_HLS_SEGMENT_SECONDS),
       "-hls_list_size", "0",
@@ -208,8 +240,9 @@ class ObsIngestService {
     // Quota enforcement always runs (it needs no backup drive); backup mirroring inside
     // the tick is skipped when backupDir isn't set.
     enforceFolderQuota(this.recordingsPath, this.recordingSizeLimitBytes, this.sessionFolderName);
-    this.maintenanceHandle = setInterval(() => this.runMaintenance(), MAINTENANCE_INTERVAL_MS);
-    this.maintenanceHandle.unref?.();
+    this.maintenanceStopped = false;
+    this.scheduleMaintenance();
+    this.scheduleTxPlaylistUpdate();
 
     await waitForFfmpegStartup(startedProcess, ffmpegPath, () => this.recordingStatus.lastMessage, inputUrl);
 
@@ -251,6 +284,44 @@ class ObsIngestService {
 
   isProcessRunning() {
     return Boolean(this.process && !this.process.killed && this.process.exitCode === null && this.process.signalCode === null);
+  }
+
+  // setInterval does not wait for an async callback to finish before firing the next one — if a
+  // single runMaintenance() pass (backup copyFile of multi-GB .mov segments, directory scans)
+  // ever takes longer than MAINTENANCE_INTERVAL_MS, invocations start overlapping and piling up
+  // with no backpressure, each holding its own in-flight buffers/arrays in memory. Under
+  // sustained load that's an unbounded leak, not just a slow tick — this crashed the process with
+  // a V8 heap-limit OOM once TX_PLAYLIST_REFRESH_INTERVAL_MS (500ms) made the equivalent overlap
+  // far more likely for updateLiveTxPlaylist(). Scheduling the *next* run only after the current
+  // one settles (via setTimeout, not setInterval) makes overlap structurally impossible.
+  scheduleMaintenance() {
+    this.maintenanceHandle = setTimeout(async () => {
+      if (this.maintenanceStopped) return;
+
+      try {
+        await this.runMaintenance();
+      } finally {
+        if (!this.maintenanceStopped) {
+          this.scheduleMaintenance();
+        }
+      }
+    }, MAINTENANCE_INTERVAL_MS);
+    this.maintenanceHandle.unref?.();
+  }
+
+  scheduleTxPlaylistUpdate() {
+    this.txPlaylistHandle = setTimeout(async () => {
+      if (this.maintenanceStopped) return;
+
+      try {
+        await this.updateLiveTxPlaylist();
+      } finally {
+        if (!this.maintenanceStopped) {
+          this.scheduleTxPlaylistUpdate();
+        }
+      }
+    }, TX_PLAYLIST_REFRESH_INTERVAL_MS);
+    this.txPlaylistHandle.unref?.();
   }
 
   // Runs on every maintenance tick while a session is active (and once more on final
@@ -368,9 +439,16 @@ class ObsIngestService {
   }
 
   stopMaintenance({ finalSync = false } = {}) {
+    this.maintenanceStopped = true;
+
     if (this.maintenanceHandle) {
-      clearInterval(this.maintenanceHandle);
+      clearTimeout(this.maintenanceHandle);
       this.maintenanceHandle = null;
+    }
+
+    if (this.txPlaylistHandle) {
+      clearTimeout(this.txPlaylistHandle);
+      this.txPlaylistHandle = null;
     }
 
     if (finalSync) {

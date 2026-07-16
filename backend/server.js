@@ -25,7 +25,7 @@ const contentRoot = __dirname;
 const webRoot = path.join(contentRoot, "wwwroot");
 const recordingsPath = process.env.EMERALD_RECORDINGS_PATH
   ? path.resolve(process.env.EMERALD_RECORDINGS_PATH)
-  : path.join(contentRoot, "Recordings123");
+  : path.join(contentRoot, "Recordings");
 const thumbnailsPath = path.join(recordingsPath, ".thumbnails");
 console.log(`Emerald backend content root: ${recordingsPath}`);
 fs.mkdirSync(recordingsPath, { recursive: true });
@@ -397,6 +397,10 @@ function registerRoutes(server) {
         delaySeconds: delaySecondsSince(txStatus?.lastFrameAt),
         timecode: onAirTimecode,
         broadcastDelaySeconds: onAirDelaySeconds,
+        // Adaptive jitter-buffer delay TX is currently adding ahead of the SDI output — grows
+        // automatically when VideoMaster reports dropped slots, eases back down when healthy.
+        // See DeltacastTxService.AdaptBufferTarget.
+        bufferDelayMs: txStatus?.bufferTargetMs ?? 0,
       },
     };
   });
