@@ -8,6 +8,7 @@
  * no longer negotiates its own WHEP/WebRTC session here.
  */
 import { useCaptureStore } from '@/stores/captureStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useTimecode } from '@/composables/useTimecode';
 import { captureMonitorUrl } from '@/services/emeraldPreview';
@@ -23,6 +24,7 @@ import {
 import { computed, ref } from 'vue';
 
 const captureStore = useCaptureStore();
+const settingsStore = useSettingsStore();
 const timelineStore = useTimelineStore();
 const { framesToTimecode } = useTimecode(timelineStore.fps);
 const info = computed(() => captureStore.info);
@@ -52,12 +54,14 @@ function requestFullscreen(): void {
 <template>
   <section class="flex h-full min-w-0 flex-1 flex-col gap-2 rounded-xl border border-white/5 bg-surface-900/80 p-2.5 shadow-panel">
     <!-- Amber timecode header over the embedded capture monitor -->
-    <div class="overflow-hidden rounded-lg border border-white/5 bg-black">
+    <div class="shrink-0 overflow-hidden rounded-lg border border-white/5 bg-black">
       <div class="flex items-center justify-between bg-gradient-to-r from-amber-500/80 to-amber-600/70 px-2 py-0.5">
         <span class="font-mono text-[11px] font-semibold tracking-wider text-black/90">{{ timecode }}</span>
         <span class="font-mono text-[9px] uppercase tracking-widest text-black/70">{{ info.resolution }}</span>
       </div>
-      <div class="relative aspect-video overflow-hidden bg-black">
+      <!-- Compact fixed height in Live Edit mode (stacked column) so the details below stay
+           visible; full 16:9 in the tall tabbed panel. -->
+      <div class="relative overflow-hidden bg-black" :class="settingsStore.liveEditMode ? 'h-[92px]' : 'aspect-video'">
         <iframe
           ref="frameRef"
           :src="captureMonitorUrl"
@@ -69,7 +73,7 @@ function requestFullscreen(): void {
     </div>
 
     <!-- Transport / ingest control row -->
-    <div class="flex items-center justify-between rounded-lg border border-white/5 bg-surface-850/70 px-2 py-1.5">
+    <div class="flex shrink-0 items-center justify-between rounded-lg border border-white/5 bg-surface-850/70 px-2 py-1.5">
       <button
         class="rounded p-1 transition"
         :class="info.isCapturing ? 'text-rose-400 shadow-glow-rose' : 'text-slate-400 hover:text-rose-400'"
@@ -98,14 +102,14 @@ function requestFullscreen(): void {
     </div>
 
     <!-- Decorative signal-level bars -->
-    <div class="flex flex-col gap-1 px-1">
+    <div class="flex shrink-0 flex-col gap-1 px-1">
       <div class="h-1 rounded-full bg-gradient-to-r from-teal-400/70 to-teal-400/10" />
       <div class="h-1 w-4/5 rounded-full bg-gradient-to-r from-emerald-400/60 to-emerald-400/10" />
       <div class="h-1 w-2/3 rounded-full bg-gradient-to-r from-teal-400/50 to-teal-400/10" />
     </div>
 
     <!-- Metadata -->
-    <div class="flex-1 space-y-2 overflow-y-auto rounded-lg border border-white/5 bg-surface-850/60 p-3 text-xs">
+    <div class="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-white/5 bg-surface-850/60 p-3 text-xs">
       <h3 class="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
         <GlobeAltIcon class="h-3.5 w-3.5 text-teal-400" />
         Capture Preview

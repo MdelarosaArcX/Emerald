@@ -7,24 +7,66 @@
 import TimelineClip from '@/components/timeline/TimelineClip.vue';
 import { useTimelineStore } from '@/stores/timelineStore';
 import type { Track } from '@/types/clip';
+import { ref } from 'vue';
 
-defineProps<{
+const props = defineProps<{
   track: Track;
   pixelsPerFrame: number;
 }>();
 
 const timelineStore = useTimelineStore();
+const dragOver = ref(false);
 
 function onClipChange(clipId: string, payload: { start: number; duration: number }): void {
   timelineStore.updateClip(clipId, payload);
+}
+
+function onDragOver(event: DragEvent): void {
+  if (props.track.locked) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  dragOver.value = true;
+}
+
+function onDrop(event: DragEvent): void {
+  dragOver.value = false;
+  if (props.track.locked) return;
+  const raw = event.dataTransfer?.getData('application/x-emerald-clip');
+  if (!raw) return;
+  event.preventDefault();
+
+  let data: { name: string; url: string; thumbnail?: string; durationSeconds?: number };
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return;
+  }
+
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const startFrame = Math.max(0, Math.round((event.clientX - rect.left) / props.pixelsPerFrame));
+  timelineStore.addClipFromSource({
+    name: data.name,
+    url: data.url,
+    thumbnail: data.thumbnail,
+    durationFrames: Math.round((data.durationSeconds ?? 5) * timelineStore.fps),
+    trackId: props.track.id,
+    startFrame,
+    kind: props.track.kind === 'audio' ? 'audio' : 'video',
+  });
 }
 </script>
 
 <template>
   <div
-    class="relative border-b border-white/5"
-    :class="track.visible ? 'bg-surface-900/40' : 'bg-surface-950/60'"
+    class="relative border-b border-white/5 transition-colors"
+    :class="[
+      track.visible ? 'bg-surface-900/40' : 'bg-surface-950/60',
+      dragOver ? 'ring-1 ring-inset ring-teal-400/70 bg-teal-400/[0.06]' : '',
+    ]"
     :style="{ height: `${track.height}px` }"
+    @dragover="onDragOver"
+    @dragleave="dragOver = false"
+    @drop="onDrop"
   >
     <div
       v-if="track.locked"

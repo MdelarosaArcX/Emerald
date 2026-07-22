@@ -7,6 +7,7 @@
  */
 import { fetchRecordedClips, type RecordedClip } from '@/services/emeraldPreview';
 import { useProgramStore } from '@/stores/programStore';
+import { useTimelineStore } from '@/stores/timelineStore';
 import {
   ArrowPathIcon,
   ChevronLeftIcon,
@@ -16,6 +17,11 @@ import {
 import { computed, onMounted, ref } from 'vue';
 
 const programStore = useProgramStore();
+const timelineStore = useTimelineStore();
+
+// Nominal length for a clicked clip (the real segment length can't be read in-browser). The clip
+// is placed on the timeline at this length and can be trimmed/extended there.
+const DEFAULT_LOAD_SECONDS = 30;
 
 const clips = ref<RecordedClip[]>([]);
 const loading = ref(false);
@@ -55,6 +61,26 @@ function formatCreated(iso: string): string {
 
 function pick(clip: RecordedClip): void {
   programStore.loadClip(clip);
+  // Build a fresh single-clip timeline around this clip so it previews in the center and can be
+  // edited (cut / trim / effects). Drag additional clips onto the timeline to build a sequence.
+  timelineStore.loadProgramClip({
+    name: clip.fileName,
+    thumbnail: clip.thumbnailUrl,
+    durationFrames: Math.round(DEFAULT_LOAD_SECONDS * programStore.fps),
+    fps: programStore.fps,
+  });
+}
+
+// Drag a clip onto a timeline track to insert it. Duration defaults to a short, editable length
+// (the real segment length isn't known until the clip is loaded); trim/extend it on the timeline.
+const DEFAULT_DROP_SECONDS = 5;
+function onDragStart(event: DragEvent, clip: RecordedClip): void {
+  if (!event.dataTransfer) return;
+  event.dataTransfer.effectAllowed = 'copy';
+  event.dataTransfer.setData(
+    'application/x-emerald-clip',
+    JSON.stringify({ name: clip.fileName, url: clip.url, thumbnail: clip.thumbnailUrl, durationSeconds: DEFAULT_DROP_SECONDS }),
+  );
 }
 </script>
 
@@ -94,11 +120,14 @@ function pick(clip: RecordedClip): void {
       <button
         v-for="clip in filtered"
         :key="`${clip.sessionFolder}/${clip.fileName}`"
-        class="group flex flex-col overflow-hidden rounded-lg border text-left transition"
+        class="group flex cursor-grab flex-col overflow-hidden rounded-lg border text-left transition active:cursor-grabbing"
         :class="programStore.clip?.url === clip.url
           ? 'border-teal-400 shadow-glow-teal'
           : 'border-white/5 bg-surface-850/70 hover:border-teal-500/40'"
+        draggable="true"
+        title="Click to load · drag onto the timeline to insert"
         @click="pick(clip)"
+        @dragstart="onDragStart($event, clip)"
       >
         <div class="relative w-full shrink-0 overflow-hidden bg-black" style="height: 72px">
           <img

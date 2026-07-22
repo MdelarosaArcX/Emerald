@@ -5,6 +5,8 @@
  * and the multi-track timeline in a resizable split layout.
  */
 import CaptureDeck from '@/components/capture/CaptureDeck.vue';
+import LiveEditDeck from '@/components/capture/LiveEditDeck.vue';
+import EffectsPanel from '@/components/inspector/EffectsPanel.vue';
 import InspectorPanel from '@/components/inspector/InspectorPanel.vue';
 import ProgramMonitor from '@/components/monitor/ProgramMonitor.vue';
 import PlaybackMonitor from '@/components/monitor/PlaybackMonitor.vue';
@@ -12,6 +14,7 @@ import TimelineEditor from '@/components/timeline/TimelineEditor.vue';
 import { useCaptureStore } from '@/stores/captureStore';
 import { usePlaybackStore } from '@/stores/playbackStore';
 import { useProgramStore } from '@/stores/programStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useTimelineStore } from '@/stores/timelineStore';
 import 'splitpanes/dist/splitpanes.css';
 import { Pane, Splitpanes } from 'splitpanes';
@@ -21,6 +24,7 @@ const timelineStore = useTimelineStore();
 const playbackStore = usePlaybackStore();
 const captureStore = useCaptureStore();
 const programStore = useProgramStore();
+const settingsStore = useSettingsStore();
 
 // The information/inspector drawer ("Video / Audio FX") is collapsed by default so the timeline
 // spans the full width, matching the broadcast layout. Toggled from the right-panel FX tab or the
@@ -47,13 +51,15 @@ onMounted(async () => {
       <Pane :size="72">
         <Splitpanes class="h-full">
           <Pane :size="22" :min-size="16">
-            <CaptureDeck />
+            <LiveEditDeck v-if="settingsStore.liveEditMode" />
+            <CaptureDeck v-else />
           </Pane>
           <Pane :size="56" :min-size="30">
             <ProgramMonitor />
           </Pane>
           <Pane :size="22" :min-size="16">
-            <PlaybackMonitor :inspector-open="inspectorOpen" @toggle-inspector="toggleInspector" />
+            <EffectsPanel v-if="settingsStore.liveEditMode" />
+            <PlaybackMonitor v-else :inspector-open="inspectorOpen" @toggle-inspector="toggleInspector" />
           </Pane>
         </Splitpanes>
       </Pane>

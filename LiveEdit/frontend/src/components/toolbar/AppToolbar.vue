@@ -5,11 +5,23 @@
  * Emerald Live Edit broadcast header.
  */
 import { useProjectStore } from '@/stores/projectStore';
-import { SignalIcon, UserCircleIcon } from '@heroicons/vue/24/outline';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { ComputerDesktopIcon, SignalIcon, UserCircleIcon } from '@heroicons/vue/24/outline';
 import { useIntervalFn } from '@vueuse/core';
+import { useRouter } from 'vue-router';
 import { computed, ref } from 'vue';
 
 const projectStore = useProjectStore();
+const settingsStore = useSettingsStore();
+const router = useRouter();
+
+// Toggle Live Edit mode; make sure we're on the editor screen so the change is visible.
+function toggleLiveEdit(): void {
+  settingsStore.toggleLiveEditMode();
+  if (settingsStore.liveEditMode && router.currentRoute.value.path !== '/editor') {
+    router.push('/editor');
+  }
+}
 
 const now = ref(new Date());
 useIntervalFn(() => {
@@ -70,6 +82,18 @@ const onAir = computed(() => projectStore.status.recording || projectStore.statu
           {{ delayLabel }}
         </span>
       </div>
+
+      <!-- Live Edit mode toggle: stacked capture+media on the left, effects panel on the right -->
+      <button
+        class="rounded-md p-1 transition"
+        :class="settingsStore.liveEditMode
+          ? 'bg-emerald-500/10 text-emerald-300 shadow-glow'
+          : 'text-slate-400 hover:bg-white/5 hover:text-emerald-300'"
+        :title="settingsStore.liveEditMode ? 'Live Edit mode: On' : 'Live Edit mode: Off'"
+        @click="toggleLiveEdit"
+      >
+        <ComputerDesktopIcon class="h-7 w-7" />
+      </button>
 
       <!-- On-air broadcast indicator -->
       <div

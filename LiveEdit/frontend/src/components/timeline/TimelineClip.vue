@@ -136,17 +136,26 @@ const isFx = computed(() => props.clip.type === 'fx');
       <span class="absolute bottom-1 left-1.5 text-[9px] uppercase tracking-wider text-slate-500">{{ typeLabel }}</span>
     </template>
 
+    <!-- Trim handles (always visible; brighter for the selected clip) -->
     <div
       v-if="!trackLocked"
-      class="absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize opacity-0 group-hover:opacity-100"
+      class="absolute inset-y-0 left-0 z-20 flex w-2 cursor-ew-resize items-center justify-center rounded-l-md border-r border-black/30 transition-opacity"
+      :class="selected ? 'opacity-100' : 'opacity-70 group-hover:opacity-100'"
       :style="{ backgroundColor: clip.color }"
+      title="Trim start"
       @pointerdown="onPointerDown($event, 'resize-left')"
-    />
+    >
+      <span class="h-3 w-0.5 rounded-full bg-black/50" />
+    </div>
     <div
       v-if="!trackLocked"
-      class="absolute inset-y-0 right-0 z-10 w-1.5 cursor-ew-resize opacity-0 group-hover:opacity-100"
+      class="absolute inset-y-0 right-0 z-20 flex w-2 cursor-ew-resize items-center justify-center rounded-r-md border-l border-black/30 transition-opacity"
+      :class="selected ? 'opacity-100' : 'opacity-70 group-hover:opacity-100'"
       :style="{ backgroundColor: clip.color }"
+      title="Trim end"
       @pointerdown="onPointerDown($event, 'resize-right')"
-    />
+    >
+      <span class="h-3 w-0.5 rounded-full bg-black/50" />
+    </div>
   </div>
 </template>
