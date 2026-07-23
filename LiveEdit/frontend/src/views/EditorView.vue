@@ -4,21 +4,38 @@
  * capture preview, program monitor, live playback monitor, inspector,
  * and the multi-track timeline in a resizable split layout.
  */
-import CapturePreview from '@/components/capture/CapturePreview.vue';
+import CaptureDeck from '@/components/capture/CaptureDeck.vue';
+import LiveEditDeck from '@/components/capture/LiveEditDeck.vue';
+import EffectsPanel from '@/components/inspector/EffectsPanel.vue';
 import InspectorPanel from '@/components/inspector/InspectorPanel.vue';
 import ProgramMonitor from '@/components/monitor/ProgramMonitor.vue';
 import PlaybackMonitor from '@/components/monitor/PlaybackMonitor.vue';
 import TimelineEditor from '@/components/timeline/TimelineEditor.vue';
 import { useCaptureStore } from '@/stores/captureStore';
 import { usePlaybackStore } from '@/stores/playbackStore';
+import { useProgramStore } from '@/stores/programStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useTimelineStore } from '@/stores/timelineStore';
 import 'splitpanes/dist/splitpanes.css';
 import { Pane, Splitpanes } from 'splitpanes';
-import { onMounted } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 
 const timelineStore = useTimelineStore();
 const playbackStore = usePlaybackStore();
 const captureStore = useCaptureStore();
+const programStore = useProgramStore();
+const settingsStore = useSettingsStore();
+
+// The information/inspector drawer ("Video / Audio FX") is collapsed by default so the timeline
+// spans the full width, matching the broadcast layout. Toggled from the right-panel FX tab or the
+// timeline header — and auto-opened when a clip is loaded so its details are visible immediately.
+const inspectorOpen = ref(false);
+function toggleInspector(): void {
+  inspectorOpen.value = !inspectorOpen.value;
+}
+watch(() => programStore.clip, (clip) => {
+  if (clip) inspectorOpen.value = true;
+});
 
 onMounted(async () => {
   await timelineStore.fetchTimeline();
@@ -34,20 +51,22 @@ onMounted(async () => {
       <Pane :size="72">
         <Splitpanes class="h-full">
           <Pane :size="22" :min-size="16">
-            <CapturePreview />
+            <LiveEditDeck v-if="settingsStore.liveEditMode" />
+            <CaptureDeck v-else />
           </Pane>
           <Pane :size="56" :min-size="30">
             <ProgramMonitor />
           </Pane>
           <Pane :size="22" :min-size="16">
-            <PlaybackMonitor />
+            <EffectsPanel v-if="settingsStore.liveEditMode" />
+            <PlaybackMonitor v-else :inspector-open="inspectorOpen" @toggle-inspector="toggleInspector" />
           </Pane>
         </Splitpanes>
       </Pane>
       <Pane :size="28" :min-size="15">
         <div class="flex h-full gap-3 pt-3">
-          <TimelineEditor class="min-w-0 flex-1" />
-          <InspectorPanel />
+          <TimelineEditor class="min-w-0 flex-1" :inspector-open="inspectorOpen" @toggle-inspector="toggleInspector" />
+          <InspectorPanel v-if="inspectorOpen" />
         </div>
       </Pane>
     </Splitpanes>

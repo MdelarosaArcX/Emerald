@@ -5,7 +5,6 @@
  */
 import AppToolbar from '@/components/toolbar/AppToolbar.vue';
 import NotificationCenter from '@/components/notifications/NotificationCenter.vue';
-import ProjectSidebar from '@/components/sidebar/ProjectSidebar.vue';
 import StatusBar from '@/components/status/StatusBar.vue';
 import { useProjectStore } from '@/stores/projectStore';
 import { useIntervalFn } from '@vueuse/core';
@@ -23,10 +22,9 @@ useIntervalFn(() => {
 </script>
 
 <template>
-  <div class="flex h-screen w-screen flex-col overflow-hidden bg-surface-950 text-slate-200">
+  <div class="flex h-screen w-screen flex-col overflow-hidden bg-surface-950 bg-app-glow text-slate-200">
     <AppToolbar />
     <div class="flex min-h-0 flex-1">
-      <ProjectSidebar />
       <main class="min-w-0 flex-1 overflow-hidden">
         <RouterView />
       </main>

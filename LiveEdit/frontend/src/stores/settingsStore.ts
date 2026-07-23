@@ -9,6 +9,9 @@ interface SettingsState {
   defaultFps: number;
   defaultResolution: string;
   proxyPlayback: boolean;
+  // When on, the editor drops the tabbed left deck for a stacked capture-preview + media-browser
+  // column and swaps the right monitor for the video/audio effects panel.
+  liveEditMode: boolean;
 }
 
 export const useSettingsStore = defineStore('settings', {
@@ -21,9 +24,13 @@ export const useSettingsStore = defineStore('settings', {
     defaultFps: 29.97,
     defaultResolution: '1920x1080',
     proxyPlayback: false,
+    liveEditMode: false,
   }),
 
   actions: {
+    toggleLiveEditMode(): void {
+      this.liveEditMode = !this.liveEditMode;
+    },
     setAccentColor(color: 'emerald' | 'teal'): void {
       this.accentColor = color;
     },
