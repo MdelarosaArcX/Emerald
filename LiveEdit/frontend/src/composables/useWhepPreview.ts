@@ -45,6 +45,8 @@ export function useWhepPreview() {
       pc = null;
     }
 
+    // Tell MediaMTX to drop the WHEP session so abandoned reconnect attempts don't pile up
+    // orphaned sessions on the server (which itself can lead to "too many requests").
     if (sessionUrl) {
       fetch(sessionUrl, { method: 'DELETE' }).catch(() => {});
       sessionUrl = null;

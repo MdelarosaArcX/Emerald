@@ -8,6 +8,14 @@
 
 const EMERALD_API_BASE = (import.meta.env.VITE_EMERALD_API_BASE_URL || 'http://10.0.0.32:5000').replace(/\/+$/, '');
 
+// Base URL of the main Emerald *frontend* (its chromeless /monitor confidence pages), as opposed
+// to EMERALD_API_BASE which is the backend. The capture / on-air previews embed these pages
+// directly instead of this app negotiating its own WHEP session — the monitor page owns the
+// live playback and self-heals on its own.
+const EMERALD_MONITOR_BASE = (import.meta.env.VITE_EMERALD_MONITOR_BASE_URL || 'http://10.0.0.32:5173').replace(/\/+$/, '');
+export const captureMonitorUrl = `${EMERALD_MONITOR_BASE}/monitor/capture`;
+export const onAirMonitorUrl = `${EMERALD_MONITOR_BASE}/monitor/onair`;
+
 async function fetchWhepUrl(path: string): Promise<string | null> {
   try {
     const res = await fetch(`${EMERALD_API_BASE}${path}`);
@@ -27,6 +35,36 @@ export function fetchCapturePreviewWhepUrl(): Promise<string | null> {
 /** On-air preview — real physical SDI loopback of what's actually being transmitted (RX5-sourced). */
 export function fetchOnAirPreviewWhepUrl(): Promise<string | null> {
   return fetchWhepUrl('/api/onair-preview/status');
+}
+
+/** A recorded H.264 clip segment served by the Emerald backend. */
+export interface RecordedClip {
+  fileName: string;
+  sessionFolder: string;
+  url: string; // absolute (playable in <video>)
+  thumbnailUrl: string; // absolute
+  size: number;
+  createdAt: string;
+}
+
+/**
+ * Lists recorded clips from the Emerald backend (the /api/obs-recordings endpoint on 10.0.0.32),
+ * rewriting the backend-relative url/thumbnailUrl into absolute URLs so they load cross-origin
+ * from this app. Note: the backend stats a large recordings volume, so this call can take a while.
+ */
+export async function fetchRecordedClips(): Promise<RecordedClip[]> {
+  try {
+    const res = await fetch(`${EMERALD_API_BASE}/api/obs-recordings`);
+    if (!res.ok) return [];
+    const list = (await res.json()) as RecordedClip[];
+    return list.map((clip) => ({
+      ...clip,
+      url: `${EMERALD_API_BASE}${clip.url}`,
+      thumbnailUrl: `${EMERALD_API_BASE}${clip.thumbnailUrl}`,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 export interface EmeraldTimecode {
