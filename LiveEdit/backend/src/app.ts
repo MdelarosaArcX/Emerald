@@ -1,5 +1,6 @@
 import cors from 'cors';
 import express, { Application, NextFunction, Request, Response } from 'express';
+import { PROXY_DIR, RENDER_DIR } from './controllers/render.controller';
 import captureRoutes from './routes/capture.routes';
 import playbackRoutes from './routes/playback.routes';
 import projectRoutes from './routes/project.routes';
@@ -27,6 +28,10 @@ export function createApp(corsOrigin: string): Application {
   app.get('/health', (_req: Request, res: Response) => {
     res.json({ success: true, service: 'emerald-live-edit-backend', status: 'ok' });
   });
+
+  // Generated media (browser-playable proxies and rendered sequence outputs).
+  app.use('/proxies', express.static(PROXY_DIR));
+  app.use('/renders', express.static(RENDER_DIR));
 
   app.use('/api', projectRoutes);
   app.use('/api', timelineRoutes);

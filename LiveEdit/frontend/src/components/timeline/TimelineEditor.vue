@@ -8,6 +8,7 @@ import TimelineCursor from '@/components/timeline/TimelineCursor.vue';
 import TimelinePlayhead from '@/components/timeline/TimelinePlayhead.vue';
 import TimelineRuler from '@/components/timeline/TimelineRuler.vue';
 import TimelineTrack from '@/components/timeline/TimelineTrack.vue';
+import { renderSequence } from '@/services/render';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useTimecode } from '@/composables/useTimecode';
 import {
@@ -20,10 +21,12 @@ import {
   LockOpenIcon,
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
+  PlusIcon,
   ScissorsIcon,
   SpeakerWaveIcon,
   SpeakerXMarkIcon,
   TrashIcon,
+  XMarkIcon,
 } from '@heroicons/vue/24/outline';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import draggable from 'vuedraggable';
@@ -55,32 +58,31 @@ function deleteSelected(): void {
   if (clip) timelineStore.removeClip(clip.id);
 }
 
-/** Save the edit as a sequence/EDL project file (source + in/out + position per clip). */
-function saveSequence(): void {
+const rendering = ref(false);
+
+/** Render the sequence into one MP4 via the backend (trim + concat), then open the result. */
+async function saveSequence(): Promise<void> {
   const t = timelineStore.timeline;
-  if (!t) return;
+  if (!t || rendering.value) return;
   const clips = t.tracks
-    .flatMap((tr) =>
-      tr.clips.map((c) => ({
-        track: tr.id,
-        name: c.name,
-        source: c.path,
-        type: c.type,
-        startFrame: c.start,
-        durationFrames: c.duration,
-        trimInFrames: c.trimIn,
-        trimOutFrames: c.trimOut,
-      })),
-    )
-    .sort((a, b) => a.startFrame - b.startFrame);
-  const project = { id: t.id, fps: t.fps, durationFrames: t.duration, clips };
-  const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = 'emerald-sequence.json';
-  anchor.click();
-  URL.revokeObjectURL(url);
+    .filter((tr) => tr.kind !== 'audio')
+    .flatMap((tr) => tr.clips)
+    .filter((c) => /^https?:/i.test(c.path))
+    .sort((a, b) => a.start - b.start)
+    .map((c) => ({ url: c.path, trimInFrames: c.trimIn, trimOutFrames: c.trimOut }));
+  if (!clips.length) {
+    window.alert('Add a recorded clip to the timeline first — there is nothing to render.');
+    return;
+  }
+  rendering.value = true;
+  try {
+    const url = await renderSequence(clips, t.fps);
+    if (url) window.open(url, '_blank');
+  } catch (err) {
+    window.alert(err instanceof Error ? err.message : 'Render failed');
+  } finally {
+    rendering.value = false;
+  }
 }
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -173,12 +175,13 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
           Del
         </button>
         <button
-          class="flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-medium text-emerald-300 transition hover:bg-emerald-500/20"
-          title="Save the edit as a sequence file"
+          class="flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-medium text-emerald-300 transition hover:bg-emerald-500/20 disabled:cursor-wait disabled:opacity-60"
+          :disabled="rendering"
+          title="Render the sequence into one video (trim + concat)"
           @click="saveSequence"
         >
-          <ArrowDownTrayIcon class="h-3.5 w-3.5" />
-          Save
+          <ArrowDownTrayIcon class="h-3.5 w-3.5" :class="{ 'animate-pulse': rendering }" />
+          {{ rendering ? 'Rendering…' : 'Save' }}
         </button>
         <span class="h-4 w-px bg-white/10" />
         <button
@@ -197,6 +200,15 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
         >
           SNAP
         </button>
+        <div class="flex items-center gap-0.5 rounded-md border border-white/5 bg-surface-800 px-1 py-0.5">
+          <span class="px-0.5 text-[9px] font-medium uppercase tracking-wider text-slate-500">Add</span>
+          <button class="flex items-center rounded px-1 py-0.5 text-[10px] font-bold text-slate-400 transition hover:text-teal-300" title="Add a video track (overlapping / layered video)" @click="timelineStore.addTrack('video')">
+            <PlusIcon class="h-3 w-3" />V
+          </button>
+          <button class="flex items-center rounded px-1 py-0.5 text-[10px] font-bold text-slate-400 transition hover:text-emerald-300" title="Add an audio track" @click="timelineStore.addTrack('audio')">
+            <PlusIcon class="h-3 w-3" />A
+          </button>
+        </div>
         <div class="flex items-center gap-1 rounded-md border border-white/5 bg-surface-800 px-1 py-0.5">
           <button class="rounded p-1 text-slate-400 hover:text-emerald-300" @click="timelineStore.zoomOut()">
             <MagnifyingGlassMinusIcon class="h-3.5 w-3.5" />
@@ -240,6 +252,13 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
                     @click="timelineStore.toggleTrackVisibility(track.id)"
                   >
                     <component :is="track.visible ? EyeIcon : EyeSlashIcon" class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    class="rounded p-0.5 text-slate-600 transition hover:text-rose-400"
+                    title="Remove track"
+                    @click="timelineStore.removeTrack(track.id)"
+                  >
+                    <XMarkIcon class="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>

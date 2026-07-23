@@ -21,6 +21,11 @@ function newClipId(): string {
   return `clip-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
 
+/** Unique-enough id for tracks created at runtime. */
+function newTrackId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
+}
+
 export const useTimelineStore = defineStore('timeline', {
   state: (): TimelineState => ({
     timeline: null,
@@ -99,10 +104,10 @@ export const useTimelineStore = defineStore('timeline', {
      * thumbnail filmstrip) and one audio lane, both spanning the clip's real frame count at its
      * real fps — so the ruler, playhead and scrubbing all operate frame-for-frame on that clip.
      */
-    loadProgramClip(payload: { name: string; thumbnail: string; durationFrames: number; fps: number }): void {
+    loadProgramClip(payload: { name: string; thumbnail: string; durationFrames: number; fps: number; url?: string }): void {
       const duration = Math.max(1, Math.round(payload.durationFrames));
       const base = {
-        path: '',
+        path: payload.url ?? '',
         start: 0,
         trimIn: 0,
         trimOut: duration,
@@ -291,6 +296,43 @@ export const useTimelineStore = defineStore('timeline', {
 
     setMouseFrame(frame: number | null): void {
       this.mouseFrame = frame;
+    },
+
+    /** Add a new empty track (for overlapping / multi-layer video or extra audio). */
+    addTrack(kind: 'video' | 'audio' = 'video'): string | null {
+      if (!this.timeline) return null;
+      const isAudio = kind === 'audio';
+      const prefix = isAudio ? 'A' : 'V';
+      const sameKind = this.timeline.tracks.filter((t) => (isAudio ? t.kind === 'audio' : t.kind !== 'audio'));
+      const orders = this.timeline.tracks.map((t) => t.order);
+      // Video tracks stack on top (lower order); audio tracks go to the bottom (higher order).
+      const order = isAudio ? Math.max(0, ...orders) + 1 : Math.min(0, ...orders) - 1;
+      const id = newTrackId(prefix.toLowerCase());
+      const track: Track = {
+        id,
+        name: `${prefix}${sameKind.length + 1}`,
+        kind: isAudio ? 'audio' : 'video',
+        order,
+        height: isAudio ? 56 : 72,
+        locked: false,
+        visible: true,
+        muted: false,
+        solo: false,
+        clips: [],
+      };
+      this.timeline.tracks.push(track);
+      return id;
+    },
+
+    /** Remove a track (and any clips on it). */
+    removeTrack(trackId: string): void {
+      if (!this.timeline) return;
+      const idx = this.timeline.tracks.findIndex((t) => t.id === trackId);
+      if (idx === -1) return;
+      const [removed] = this.timeline.tracks.splice(idx, 1);
+      if (removed && this.selectedClipId && removed.clips.some((c) => c.id === this.selectedClipId)) {
+        this.selectedClipId = null;
+      }
     },
 
     reorderTracks(orderedIds: string[]): void {

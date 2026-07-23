@@ -16,6 +16,9 @@ export default defineConfig({
         target: 'http://localhost:4000',
         changeOrigin: true,
       },
+      // Generated media (playable proxies + rendered outputs) served by the LiveEdit backend.
+      '/proxies': { target: 'http://localhost:4000', changeOrigin: true },
+      '/renders': { target: 'http://localhost:4000', changeOrigin: true },
       '/socket.io': {
         target: 'http://localhost:4000',
         ws: true,

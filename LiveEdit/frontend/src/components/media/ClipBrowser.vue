@@ -66,6 +66,7 @@ function pick(clip: RecordedClip): void {
   timelineStore.loadProgramClip({
     name: clip.fileName,
     thumbnail: clip.thumbnailUrl,
+    url: clip.url,
     durationFrames: Math.round(DEFAULT_LOAD_SECONDS * programStore.fps),
     fps: programStore.fps,
   });
