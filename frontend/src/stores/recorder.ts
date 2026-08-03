@@ -5,10 +5,16 @@ type RecorderStatus = {
   startedAt: string | null;
   inputUrl: string | null;
   outputPattern: string | null;
+  // The ProRes 422 MOV archival leg's own output path — ffmpeg always writes this alongside
+  // outputPattern's H.264 MP4 proxy from the same input (see obsIngestService.js's start()).
+  archivalOutputPattern: string | null;
   segmentSeconds: number;
   broadcastDelaySeconds: number;
   container: string;
   lastMessage: string | null;
+  // From RECORDING_SIZE_LIMIT (see obsIngestService.js/storageQuotaService.js) — 0 when unset
+  // (no cap configured), null before start() has ever run.
+  recordingSizeLimitBytes: number | null;
 };
 
 type WebrtcStatus = {

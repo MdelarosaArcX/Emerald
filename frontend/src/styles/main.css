@@ -175,12 +175,43 @@ a {
   justify-content: center;
   width: 30px;
   height: 128px;
+  border: 0;
   border-radius: 4px 0 0 4px;
   background: #536aa0;
   color: #121a2b;
+  font: inherit;
   font-size: 0.9rem;
   writing-mode: vertical-rl;
   transform: rotate(180deg);
+  cursor: default;
+}
+
+/* Stacks 2+ clickable deck-tabs (e.g. Media Browser / Capture Logs) in the same left-edge slot a
+   single static .deck-tab otherwise occupies alone. */
+.deck-tabs {
+  position: absolute;
+  top: 16px;
+  left: -19px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deck-tabs .deck-tab {
+  position: static;
+  height: 110px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.deck-tabs .deck-tab.inactive {
+  background: rgba(83, 106, 160, 0.28);
+  color: rgba(228, 233, 247, 0.75);
+}
+
+.deck-tabs .deck-tab.inactive:hover {
+  background: rgba(83, 106, 160, 0.45);
 }
 
 .media-deck {
@@ -191,6 +222,107 @@ a {
 .capture-deck {
   padding: 17px;
   border: 1px solid rgba(29, 39, 65, 0.75);
+}
+
+.status-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.status-band,
+.status-card {
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: #1a2540;
+}
+
+.status-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 28px;
+}
+
+.status-band-col {
+  display: grid;
+  gap: 6px;
+}
+
+.status-band-col-end {
+  margin-left: auto;
+}
+
+.status-card {
+  display: grid;
+  gap: 8px;
+}
+
+.status-title {
+  margin: 0;
+  color: rgba(185, 194, 219, 0.72);
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.status-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #d7ddeb;
+  font-size: 0.86rem;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5c6f9f;
+}
+
+.status-dot.up {
+  background: #35f0b1;
+  box-shadow: 0 0 4px rgba(53, 240, 177, 0.7);
+}
+
+.status-dot.down {
+  background: #ff4d57;
+  box-shadow: 0 0 4px rgba(255, 77, 87, 0.7);
+}
+
+.status-subtext {
+  color: rgba(185, 194, 219, 0.55);
+  font-size: 0.8rem;
+}
+
+.status-timecode {
+  font-family: "Michroma", "Rajdhani", "Eurostile", "Segoe UI", system-ui, sans-serif;
+  color: #35f0b1;
+  font-size: 0.94rem;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.config-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 28px;
+}
+
+.config-grid-2col .stats {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.config-grid-2col .stats div {
+  grid-template-columns: 172px minmax(0, 1fr);
 }
 
 .preview-panel {

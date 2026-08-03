@@ -12,6 +12,7 @@ const fastifyStatic = require("@fastify/static");
 
 const { normalizeFfmpegPath } = require("./services/obsRecordingService");
 const { ObsIngestService, TX_LIVE_PLAYLIST_NAME, startOrphanTxPlaylistWatcher } = require("./services/obsIngestService");
+const { EditCaptureService, MASTER_PATTERN: EDIT_CAPTURE_MASTER_PATTERN } = require("./services/editCaptureService");
 const { RtmpIngestService } = require("./services/rtmpIngestService");
 const { RtmpOutService } = require("./services/rtmpOutService");
 const { WebrtcPreviewService, stopSharedMediaMtx } = require("./services/webrtcPreviewService");
@@ -19,7 +20,10 @@ const { probeObsStream } = require("./services/obsStreamProbeService");
 const { runtimeServices } = require("./services/runtimeServices");
 const { DeltacastTxService } = require("./services/deltacastTxService");
 const { TimecodeLogService } = require("./services/timecodeLogService");
-const { logEvent } = require("./services/eventLogService");
+const { logEvent, readRecentEvents } = require("./services/eventLogService");
+const { formatWallClockTimecode } = require("./services/timecodeFormat");
+const { probeSegment } = require("./services/segmentProbeService");
+const db = require("./db");
 
 const contentRoot = __dirname;
 const webRoot = path.join(contentRoot, "wwwroot");
@@ -27,9 +31,13 @@ const recordingsPath = process.env.EMERALD_RECORDINGS_PATH
   ? path.resolve(process.env.EMERALD_RECORDINGS_PATH)
   : path.join(contentRoot, "Recordings");
 const thumbnailsPath = path.join(recordingsPath, ".thumbnails");
+const editCapturePath = process.env.EMERALD_EDIT_CAPTURE_PATH
+  ? path.resolve(process.env.EMERALD_EDIT_CAPTURE_PATH)
+  : path.join(contentRoot, "EditCaptures");
 console.log(`Emerald backend content root: ${recordingsPath}`);
 fs.mkdirSync(recordingsPath, { recursive: true });
 fs.mkdirSync(thumbnailsPath, { recursive: true });
+fs.mkdirSync(editCapturePath, { recursive: true });
 
 const app = fastify({
   logger: process.env.EMERALD_LOG_LEVEL
@@ -39,11 +47,21 @@ const app = fastify({
 });
 
 const obsIngest = new ObsIngestService(recordingsPath);
+const editCapture = new EditCaptureService(editCapturePath);
 const rtmpIngest = new RtmpIngestService();
 const rtmpOut = new RtmpOutService();
 const webrtcPreview = new WebrtcPreviewService();
 const deltacastTx = new DeltacastTxService();
 rtmpIngest.start();
+
+// DeltacastSdkService's RX3 capture loop runs continuously for this whole C# process's lifetime
+// (started once at boot by DeltacastCaptureService's Worker — it also feeds the always-on
+// preview), completely independent of whether an Emerald recording is running. FramesReceived/
+// FramesDropped there are therefore lifetime counters of the signal itself, not scoped to any
+// particular recording — this snapshot is subtracted from them so the Capture page's "Video
+// Framecount"/"Video Frames Dropped" only count frames captured *during the current recording*,
+// resetting to 0 each time recording starts and freezing at 0 (not counting) while stopped.
+let sessionFrameBaseline = null;
 
 // DeltacastCaptureService's TX decode process publishes its own low-latency WebRTC preview
 // directly to MediaMTX via RTSP (see DeltacastTxService.cs's PreviewRelayUrl) — mirroring the
@@ -78,14 +96,19 @@ Promise.all([
 // on a stale playlist. See startOrphanTxPlaylistWatcher()'s comment in obsIngestService.js.
 startOrphanTxPlaylistWatcher(recordingsPath, (folder) => folder === obsIngest.sessionFolderName && obsIngest.recordingStatus.isRecording);
 
-registerPlugins(app).then(() => registerRoutes(app)).then(start).catch((error) => {
-  // Fastify's logger is disabled by default (see the `logger: false` above) unless
-  // EMERALD_LOG_LEVEL is set, so app.log.error() alone silently swallows startup failures
-  // (e.g. EADDRINUSE from a backend instance already running) — always print to stderr too.
-  console.error("Emerald backend failed to start:", error);
-  app.log.error(error);
-  process.exit(1);
-});
+db.getDataSource()
+  .then(() => console.log(`Emerald database ready (${(process.env.DATABASE_TYPE || "sqlite").toLowerCase()})`))
+  .then(() => registerPlugins(app))
+  .then(() => registerRoutes(app))
+  .then(start)
+  .catch((error) => {
+    // Fastify's logger is disabled by default (see the `logger: false` above) unless
+    // EMERALD_LOG_LEVEL is set, so app.log.error() alone silently swallows startup failures
+    // (e.g. EADDRINUSE from a backend instance already running) — always print to stderr too.
+    console.error("Emerald backend failed to start:", error);
+    app.log.error(error);
+    process.exit(1);
+  });
 
 async function registerPlugins(server) {
   await server.register(cors, {
@@ -107,6 +130,11 @@ async function registerPlugins(server) {
     prefix: "/recordings/",
     decorateReply: false,
   });
+  await server.register(fastifyStatic, {
+    root: editCapturePath,
+    prefix: "/edit-captures/",
+    decorateReply: false,
+  });
 }
 
 function registerRoutes(server) {
@@ -125,6 +153,43 @@ function registerRoutes(server) {
     rtmpOut: rtmpOut.status,
     webrtcPreview: webrtcPreview.status,
   }));
+
+  // Backs the Capture page's "Database Connect" indicator — real ping/SELECT 1 probes (not just
+  // "has a client object ever been constructed", which is all /api/system/status's *Status()
+  // getters report) against the app's 3 database-shaped connections: its own primary datastore,
+  // the Redis instance backing BullMQ, and the standalone Postgres pool reserved for future use.
+  server.get("/api/system/databases", async () => {
+    const [db1, db2, db3] = await Promise.all([
+      db.pingDataSource(),
+      runtimeServices.pingRedis(),
+      runtimeServices.pingPostgres(),
+    ]);
+
+    return {
+      db1: { label: "Primary DB", ...db1 },
+      db2: { label: "Redis", ...db2 },
+      db3: { label: "Postgres", ...db3 },
+    };
+  });
+
+  // Backs the Capture page's "Capture Logs" tab — tails services/eventLogService.js's append-only
+  // logs.txt (recording/on-air lifecycle plus the warn/error entries logged alongside existing
+  // error handling below) rather than pushing over a socket, matching this app's existing
+  // poll-on-an-interval pattern (see CapturePage.vue's recorder.refresh() interval).
+  server.get("/api/logs", async (request) => {
+    const limit = Math.min(Number(request.query?.limit) || 200, 500);
+    return readRecentEvents(limit);
+  });
+
+  // Tidal Lock (the Playback page's "keep TX auto-following the latest recording" toggle) is
+  // frontend-only state (see sessionPlayback.ts — a Pinia store backed by localStorage, no
+  // backend concept of it at all) — this just gives it a line in the Capture Logs tab when it's
+  // switched, rather than logging anything about signal/reference lock, which doesn't exist here.
+  server.post("/api/logs/tidal-lock", async (request) => {
+    const engaged = Boolean(request.body?.engaged);
+    logEvent(`Tidal Lock ${engaged ? "engaged" : "disengaged"}.`, "info", "TidalLock");
+    return { ok: true };
+  });
 
   server.post("/api/system/queue-test", async () => {
     const job = await runtimeServices.enqueue("system.health", {
@@ -165,7 +230,11 @@ function registerRoutes(server) {
     };
   });
 
-  server.get("/api/obs-recording/status", async () => obsIngest.recordingStatus);
+  server.get("/api/obs-recording/status", async () => ({
+    ...obsIngest.recordingStatus,
+    // Set once start() has run at least once (see obsIngestService.js); null beforehand.
+    recordingSizeLimitBytes: obsIngest.recordingSizeLimitBytes ?? null,
+  }));
 
   server.get("/api/obs-recordings", async () => {
     const sessionFolders = await listSessionFolders(recordingsPath);
@@ -250,42 +319,176 @@ function registerRoutes(server) {
     }
 
     const files = await fs.promises.readdir(sessionDir);
-    const pattern = /^emerald-(\d+)\.mp4$/i;
+    const mp4Pattern = /^emerald-(\d+)\.mp4$/i;
+    // emerald-tx-NNN.ts — the live HLS transport-stream segments obsIngestService writes
+    // alongside the archival mp4s (see emerald-tx.m3u8/emerald-tx-live.m3u8). These aren't
+    // user-facing clips; LiveEdit only wants them so it can scrub/play the still-recording tail
+    // of an active session before its next mp4 segment has finished closing. Callers that only
+    // want playable clips should filter on kind === "mp4".
+    const tsPattern = /^emerald-tx-(\d+)\.ts$/i;
+
+    const matches = files
+      .map((fileName) => {
+        const mp4Match = mp4Pattern.exec(fileName);
+        if (mp4Match) return { fileName, index: Number(mp4Match[1]), kind: "mp4" };
+        const tsMatch = tsPattern.exec(fileName);
+        if (tsMatch) return { fileName, index: Number(tsMatch[1]), kind: "ts" };
+        return null;
+      })
+      .filter(Boolean);
+
+    const segments = await Promise.all(matches.map(async ({ fileName, kind }) => {
+      const filePath = path.join(sessionDir, fileName);
+      const stat = await fs.promises.stat(filePath);
+
+      // Probed directly off the actual file rather than trusting obsIngestService's ffmpeg
+      // command line (audio embedding there is optional, "0:a:0?") or the DB's segment records
+      // (segmentIndex there is a global counter that doesn't line up with these per-folder
+      // 000-based file names). Skipped for .ts — nothing consumes their duration yet, and
+      // probing dozens of them per request would slow this endpoint down for no benefit. The
+      // still-recording last .mp4 segment can fail to probe (ffmpeg hasn't finalized it yet);
+      // that's fine, it just falls back to null and the frontend uses a placeholder duration.
+      const probed = kind === "mp4" ? await probeSegment(filePath).catch(() => null) : null;
+
+      return {
+        fileName,
+        kind,
+        url: `/recordings/${folder}/${fileName}`,
+        thumbnailUrl: kind === "mp4"
+          ? `/api/obs-recordings/${encodeURIComponent(folder)}/${encodeURIComponent(fileName)}/thumbnail`
+          : null,
+        size: stat.size,
+        createdAt: stat.birthtime.toISOString(),
+        durationSeconds: probed?.durationSeconds ?? null,
+        hasAudio: kind === "mp4" ? Boolean(probed?.audioCodec) : null,
+      };
+    }));
+
+    // mp4 and ts segment indices are independent counters (different segment durations), so
+    // ordering the merged list by actual file creation time is the only ordering that's
+    // meaningful across both kinds.
+    return segments.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  });
+
+  // Uncompressed, frame-accurate edit-capture pipeline for LiveEdit — a separate leg from the
+  // obsIngest/rtmp recording pipeline above. DeltacastCaptureService owns the ffmpeg process (it's
+  // the only thing with access to the raw SDI frame queue); editCapture here is a thin proxy for
+  // control plus the Node-owned reconciliation/quota maintenance loop. See services/editCaptureService.js.
+  server.get("/api/edit-capture/status", async (_request, reply) => {
+    try {
+      return await editCapture.status();
+    } catch (error) {
+      return reply.code(502).send({ message: error.message });
+    }
+  });
+
+  server.post("/api/edit-capture/start", async (request, reply) => {
+    try {
+      return await editCapture.start(request.body || {});
+    } catch (error) {
+      return reply.code(502).send({ message: error.message });
+    }
+  });
+
+  server.post("/api/edit-capture/stop", async (_request, reply) => {
+    try {
+      return await editCapture.stop();
+    } catch (error) {
+      return reply.code(502).send({ message: error.message });
+    }
+  });
+
+  server.get("/api/edit-capture/sessions", async () => db.listRecentEditCaptureSessions());
+
+  server.get("/api/edit-capture/sessions/:folder/segments", async (request, reply) => {
+    const folder = path.basename(request.params.folder || "");
+    const sessionDir = path.join(editCapturePath, folder);
+
+    if (!folder || !isInsideDirectory(editCapturePath, sessionDir) || !fs.existsSync(sessionDir)) {
+      return reply.code(404).send({ message: "Edit-capture session was not found." });
+    }
+
+    const files = await fs.promises.readdir(sessionDir);
     const segments = await Promise.all(files
       .map((fileName) => {
-        const match = pattern.exec(fileName);
+        const match = EDIT_CAPTURE_MASTER_PATTERN.exec(fileName);
         return match ? { fileName, index: Number(match[1]) } : null;
       })
       .filter(Boolean)
       .map(async ({ fileName, index }) => {
         const stat = await fs.promises.stat(path.join(sessionDir, fileName));
+        const proxyFileName = fileName.replace(EDIT_CAPTURE_MASTER_PATTERN, "editcapture-proxy-$1.mp4");
+        const proxyPath = path.join(sessionDir, proxyFileName);
+        const proxyStat = await fs.promises.stat(proxyPath).catch(() => null);
+        // Probed off the H.264 proxy (not the rawvideo master — browsers/ffprobe both want the
+        // decodable leg) so LiveEdit can convert this segment's duration into frames without a
+        // second round trip. null when there's no proxy yet or the proxy hasn't finalized.
+        const probed = proxyStat ? await probeSegment(proxyPath).catch(() => null) : null;
 
         return {
-          fileName,
           index,
-          url: `/recordings/${folder}/${fileName}`,
-          thumbnailUrl: `/api/obs-recordings/${encodeURIComponent(folder)}/${encodeURIComponent(fileName)}/thumbnail`,
+          fileName,
+          sessionFolder: folder,
+          // masterUrl is carried purely as a render/export reference — LiveEdit's browser never
+          // fetches it directly (browsers have no decoder for raw UYVY). proxyUrl is what its
+          // <video> elements actually play for scrubbing/cutting.
+          masterUrl: `/edit-captures/${folder}/${fileName}`,
+          proxyUrl: proxyStat ? `/edit-captures/${folder}/${proxyFileName}` : null,
           size: stat.size,
+          proxySize: proxyStat ? proxyStat.size : null,
           createdAt: stat.birthtime.toISOString(),
+          durationSeconds: probed?.durationSeconds ?? null,
+          hasAudio: proxyStat ? Boolean(probed?.audioCodec) : null,
         };
       }));
 
-    return segments
-      .sort((a, b) => a.index - b.index)
-      .map(({ index, ...segment }) => segment);
+    return segments.sort((a, b) => a.index - b.index);
+  });
+
+  // Database-backed history — codec/timecode details verified against the actual files
+  // (obsIngestService.js ffprobes each segment once it closes), not just directory listings.
+  // See db/index.js and the RecordingSession/RecordingSegment/OnAirEvent entities.
+  server.get("/api/db/sessions", async (request) => {
+    const limit = Math.min(Number(request.query?.limit) || 50, 200);
+    return db.listRecentSessions(limit);
+  });
+
+  server.get("/api/db/sessions/:folder", async (request, reply) => {
+    const folder = path.basename(request.params.folder || "");
+    const session = await db.getSessionWithSegments(folder);
+
+    if (!session) {
+      return reply.code(404).send({ message: "No database record for that recording session." });
+    }
+
+    return session;
+  });
+
+  server.get("/api/db/onair", async (request) => {
+    const limit = Math.min(Number(request.query?.limit) || 50, 200);
+    return db.listRecentOnAirEvents(limit);
   });
 
   server.post("/api/obs-recording/start", async (request, reply) => {
     const localInputError = rtmpIngest.getLocalInputError(request.body?.inputUrl);
     if (localInputError) {
+      logEvent(`Recording start rejected — ${localInputError}`, "warn", "Recorder");
       return reply.code(400).send({ message: localInputError });
     }
 
     const { recordingStatus } = await obsIngest.start(request.body || {});
+    sessionFrameBaseline = await deltacastTx.captureStatus()
+      .then((status) => ({ framesReceived: status?.framesReceived ?? 0, framesDropped: status?.framesDropped ?? 0 }))
+      .catch(() => ({ framesReceived: 0, framesDropped: 0 }));
     return recordingStatus;
   });
 
-  server.post("/api/obs-recording/stop", async () => obsIngest.stop().recordingStatus);
+  server.post("/api/obs-recording/stop", async () => {
+    const { recordingStatus } = obsIngest.stop();
+    sessionFrameBaseline = null;
+    logEvent("Recording stopped", "info", "Recorder");
+    return recordingStatus;
+  });
 
   server.get("/api/rtmp-ingest/status", async () => rtmpIngest.status);
 
@@ -362,6 +565,19 @@ function registerRoutes(server) {
     };
 
     const recordingStatus = obsIngest.recordingStatus;
+    const isRecordingNow = Boolean(recordingStatus?.isRecording);
+    // Self-healing fallback: recording is active but there's no baseline yet (e.g. the backend
+    // restarted mid-recording, or captureStatus was unreachable the instant /start ran) — start
+    // counting from right now rather than showing a huge/wrong lifetime number.
+    if (isRecordingNow && !sessionFrameBaseline) {
+      sessionFrameBaseline = { framesReceived: captureStatus?.framesReceived ?? 0, framesDropped: captureStatus?.framesDropped ?? 0 };
+    }
+    const sessionFramesReceived = isRecordingNow
+      ? Math.max(0, (captureStatus?.framesReceived ?? 0) - sessionFrameBaseline.framesReceived)
+      : 0;
+    const sessionFramesDropped = isRecordingNow
+      ? Math.max(0, (captureStatus?.framesDropped ?? 0) - sessionFrameBaseline.framesDropped)
+      : 0;
     const broadcastDelaySeconds = recordingStatus?.broadcastDelaySeconds || 0;
     // Only true while TX is actually playing the *current* session's delayed live feed — a
     // single clip or a finished-session loop isn't "capture from N seconds ago", it's old
@@ -383,10 +599,33 @@ function registerRoutes(server) {
       capture: {
         isCapturing: Boolean(captureStatus?.isCapturing),
         startedAt: captureStatus?.startedAt ?? null,
-        framesReceived: captureStatus?.framesReceived ?? 0,
-        framesDropped: captureStatus?.framesDropped ?? 0,
+        // Scoped to the current recording session (see sessionFrameBaseline above) — 0 whenever
+        // nothing is recording, not DeltacastSdkService's lifetime-since-boot counters.
+        framesReceived: sessionFramesReceived,
+        framesDropped: sessionFramesDropped,
         lastFrameAt: captureStatus?.lastFrameAt ?? null,
         delaySeconds: delaySecondsSince(captureStatus?.lastFrameAt),
+        // Which physical Deltacast RX channel is configured for capture (see
+        // DeltacastCaptureService's CaptureOptions.ChannelIndex / DeltacastSdkService.cs) — null
+        // when DeltacastCaptureService itself is unreachable.
+        channelIndex: captureStatus?.channelIndex ?? null,
+        // Detected signal format — null whenever there's no active, locked SDI signal (see
+        // DeltacastSdkService.Status's hasDetectedFormat gate).
+        sdiInterface: captureStatus?.sdiInterface ?? null,
+        videoStandard: captureStatus?.videoStandard ?? null,
+        videoWidth: captureStatus?.videoWidth ?? null,
+        videoHeight: captureStatus?.videoHeight ?? null,
+        videoFrameRate: captureStatus?.videoFrameRate ?? null,
+        // FfmpegStreamingService's actual encode target, not a live-measured rate (see
+        // DeltacastSdkService.cs's VideoBitrateKbps/AudioBitrateKbps comments).
+        videoBitrateKbps: captureStatus?.videoBitrateKbps ?? null,
+        audioBitrateKbps: captureStatus?.audioBitrateKbps ?? null,
+        audioChannelDetected: Boolean(captureStatus?.audioChannelDetected),
+        audioCapturedMs: captureStatus?.audioCapturedMs ?? 0,
+        // Aggregate across every FrameQueueService consumer — video and embedded audio share this
+        // one buffer, so there's no separate audio buffer reading.
+        bufferInUse: captureStatus?.bufferInUse ?? null,
+        bufferCapacity: captureStatus?.bufferCapacity ?? null,
       },
       onAir: {
         isTransmitting: Boolean(txStatus?.isTransmitting),
@@ -410,12 +649,19 @@ function registerRoutes(server) {
     const sessionDir = path.join(recordingsPath, folder);
 
     if (!folder) {
+      logEvent("On-air start rejected — no recording folder selected", "warn", "TX");
       return reply.code(400).send({ message: "Select a recording folder in Playback before pushing on air." });
     }
 
     if (!isInsideDirectory(recordingsPath, sessionDir) || !fs.existsSync(sessionDir)) {
+      logEvent(`On-air start rejected — recording session '${folder}' was not found`, "warn", "TX");
       return reply.code(404).send({ message: "Recording session was not found." });
     }
+
+    // DeltacastTxService.StartAsync is a no-op that just returns the existing status when TX is
+    // already transmitting — check first so a repeated/duplicate tx/start call (e.g. a UI retry)
+    // doesn't log a second onair_events row for a session that never actually stopped.
+    const wasAlreadyTransmitting = await deltacastTx.status().then((status) => Boolean(status?.isTransmitting)).catch(() => false);
 
     const requestedFileName = request.body?.fileName ? path.basename(String(request.body.fileName)) : null;
 
@@ -433,9 +679,19 @@ function registerRoutes(server) {
 
       try {
         const status = await deltacastTx.start(filePath, { live: false, loop: false });
-        logEvent(`On-air started — clip=${folder}/${requestedFileName}`);
+        logEvent(`On-air started — clip=${folder}/${requestedFileName}`, "info", "TX");
+        if (!wasAlreadyTransmitting) {
+          db.recordOnAirStart({
+            startedAt: new Date(),
+            startTimecode: formatWallClockTimecode(new Date(), 25),
+            sourceType: "clip",
+            sourceFolder: folder,
+            sourceFile: requestedFileName,
+          }).catch((error) => app.log.error(error, "Failed to record on-air event"));
+        }
         return status;
       } catch (error) {
+        logEvent(`On-air start failed — clip=${folder}/${requestedFileName}: ${error.message}`, "error", "TX");
         return reply.code(502).send({ message: error.message });
       }
     }
@@ -460,9 +716,19 @@ function registerRoutes(server) {
 
       try {
         const status = await deltacastTx.start(txPlaylistPath, { live: true });
-        logEvent(`On-air started — live folder=${folder}`);
+        logEvent(`On-air started — live folder=${folder}`, "info", "TX");
+        if (!wasAlreadyTransmitting) {
+          db.recordOnAirStart({
+            startedAt: new Date(),
+            startTimecode: formatWallClockTimecode(new Date(), 25),
+            sourceType: "live",
+            sourceFolder: folder,
+            broadcastDelaySeconds: obsIngest.recordingStatus.broadcastDelaySeconds ?? null,
+          }).catch((error) => app.log.error(error, "Failed to record on-air event"));
+        }
         return status;
       } catch (error) {
+        logEvent(`On-air start failed — live folder=${folder}: ${error.message}`, "error", "TX");
         return reply.code(502).send({ message: error.message });
       }
     }
@@ -489,17 +755,35 @@ function registerRoutes(server) {
 
     try {
       const status = await deltacastTx.start(playlistPath);
-      logEvent(`On-air started — finished session folder=${folder}`);
+      logEvent(`On-air started — finished session folder=${folder}`, "info", "TX");
+      if (!wasAlreadyTransmitting) {
+        db.recordOnAirStart({
+          startedAt: new Date(),
+          startTimecode: formatWallClockTimecode(new Date(), 25),
+          sourceType: "finished-session",
+          sourceFolder: folder,
+        }).catch((error) => app.log.error(error, "Failed to record on-air event"));
+      }
       return status;
     } catch (error) {
+      logEvent(`On-air start failed — finished session folder=${folder}: ${error.message}`, "error", "TX");
       return reply.code(502).send({ message: error.message });
     }
   });
 
   server.post("/api/tx/stop", async (_request, reply) => {
     try {
-      return await deltacastTx.stop();
+      const status = await deltacastTx.stop();
+      logEvent("On-air stopped", "info", "TX");
+      db.recordOnAirStop({
+        stoppedAt: new Date(),
+        framesSent: status?.framesSent ?? null,
+        framesDropped: status?.framesDropped ?? null,
+        lastMessage: status?.lastMessage ?? null,
+      }).catch((error) => app.log.error(error, "Failed to record on-air stop"));
+      return status;
     } catch (error) {
+      logEvent(`On-air stop failed — ${error.message}`, "error", "TX");
       return reply.code(502).send({ message: error.message });
     }
   });
@@ -519,12 +803,14 @@ async function start() {
 
 const shutdown = () => {
   obsIngest.stop();
+  editCapture.stop().catch(() => {});
   rtmpIngest.stop();
   rtmpOut.stop();
   webrtcPreview.stopAll();
   timecodeLog.stop();
   stopSharedMediaMtx();
   runtimeServices.close()
+    .finally(() => db.closeDataSource())
     .finally(() => app.close())
     .finally(() => process.exit(0));
 };
@@ -532,11 +818,19 @@ const shutdown = () => {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-function formatWallClockTimecode(date, fps) {
-  const pad = (value) => String(Math.trunc(value)).padStart(2, "0");
-  const frames = Math.floor((date.getMilliseconds() / 1000) * fps);
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
-}
+// obsIngest's ffmpeg (the actual recording) is a child process of this one, spawned without
+// detaching — so on Windows, this process dying for ANY reason (an uncaught exception, an
+// unhandled rejection, which Node treats as fatal by default since v15) takes the active
+// recording down with it. A typical stateless web server can just crash and restart; this one
+// can't — losing a live recording is worse than staying up after a bug we didn't anticipate. Log
+// loudly (so the underlying issue is still visible/actionable) but never let it be the reason
+// recording stops.
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception (backend staying up — an active recording depends on it):", error);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection (backend staying up — an active recording depends on it):", reason);
+});
 
 function resolveListenTarget(argv, env) {
   const urlsArgIndex = argv.findIndex((arg) => arg === "--urls");

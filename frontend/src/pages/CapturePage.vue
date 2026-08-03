@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import RecorderPanel from "../components/RecorderPanel.vue";
 import PreviewPlayer from "../components/PreviewPlayer.vue";
 import CanvasWorkspace from "../components/CanvasWorkspace.vue";
+import CaptureLogPanel from "../components/CaptureLogPanel.vue";
+import CaptureStatusPanel from "../components/CaptureStatusPanel.vue";
 import { useRecorderStore } from "../stores/recorder";
 
 const recorder = useRecorderStore();
@@ -10,6 +12,8 @@ const refreshHandle = ref<number | null>(null);
 const clockHandle = ref<number | null>(null);
 const now = ref(Date.now());
 const librarySplitView = ref(false);
+type MediaTab = "browser" | "logs";
+const mediaTab = ref<MediaTab>("browser");
 
 const configuredFps = computed(() => Math.max(1, Number(recorder.settings.fps) || 25));
 
@@ -126,26 +130,44 @@ function pad(value: number) {
 <template>
   <section class="workspace-grid">
     <section class="deck media-deck" aria-label="Media browser">
-      <span class="deck-tab">Media Browser</span>
-      <PreviewPlayer
-        :src="libraryPreviewUrl"
-        :fps="configuredFps"
-        variant="library"
-        :title="selectedRecording?.fileName"
-        :description="libraryDescription"
-        :detail="libraryDetail"
-        :start-at="selectedRecording?.createdAt"
-        :split-view="librarySplitView"
-        @toggle-split-view="toggleLibrarySplitView"
-      />
-      <CanvasWorkspace
-        :recordings="recorder.recordings"
-        :selected-file-name="recorder.selectedRecordingFileName"
-        :selected-recording="selectedRecording"
-        :split-view="librarySplitView"
-        :enable-folder-browsing="true"
-        @select="recorder.selectRecording"
-      />
+      <div class="deck-tabs">
+        <button
+          class="deck-tab"
+          :class="{ inactive: mediaTab !== 'browser' }"
+          @click="mediaTab = 'browser'"
+        >Media Browser</button>
+        <button
+          class="deck-tab"
+          :class="{ inactive: mediaTab !== 'logs' }"
+          @click="mediaTab = 'logs'"
+        >Capture Logs</button>
+      </div>
+
+      <template v-if="mediaTab === 'browser'">
+        <PreviewPlayer
+          :src="libraryPreviewUrl"
+          :fps="configuredFps"
+          variant="library"
+          :title="selectedRecording?.fileName"
+          :description="libraryDescription"
+          :detail="libraryDetail"
+          :start-at="selectedRecording?.createdAt"
+          :split-view="librarySplitView"
+          @toggle-split-view="toggleLibrarySplitView"
+        />
+        <CanvasWorkspace
+          :recordings="recorder.recordings"
+          :selected-file-name="recorder.selectedRecordingFileName"
+          :selected-recording="selectedRecording"
+          :split-view="librarySplitView"
+          :enable-folder-browsing="true"
+          @select="recorder.selectRecording"
+        />
+      </template>
+      <template v-else>
+        <CaptureStatusPanel />
+        <CaptureLogPanel />
+      </template>
     </section>
 
     <section class="deck capture-deck" aria-label="Capture deck">

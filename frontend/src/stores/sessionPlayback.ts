@@ -65,6 +65,7 @@ export const useSessionPlaybackStore = defineStore("sessionPlayback", {
     toggleTidalLock() {
       this.tidalLockEnabled = !this.tidalLockEnabled;
       localStorage.setItem(TIDAL_LOCK_STORAGE_KEY, this.tidalLockEnabled ? "1" : "0");
+      logTidalLockChange(this.tidalLockEnabled);
 
       if (this.tidalLockEnabled) {
         this.applyTidalLock();
@@ -125,4 +126,13 @@ async function api<T>(url: string): Promise<T> {
   }
 
   return result as T;
+}
+
+// Best-effort — a failed log call shouldn't block engaging/disengaging Tidal Lock itself.
+function logTidalLockChange(engaged: boolean): void {
+  fetch("/api/logs/tidal-lock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ engaged }),
+  }).catch(() => {});
 }

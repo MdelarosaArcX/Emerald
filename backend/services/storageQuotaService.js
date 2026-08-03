@@ -152,9 +152,53 @@ async function trimActiveSessionSegments(sessionDir, limitBytes, currentTotalByt
   return total;
 }
 
+// Single-file-type variant of trimActiveSessionSegments, for pipelines where a paired file (e.g.
+// a small browser-playable proxy alongside a large master) must never be evicted just because its
+// master was. Trims the oldest already-finished files matching `filePattern` in `sessionDir`,
+// oldest index first, until back under `limitBytes` — the highest-index match is presumed still
+// being actively written and is never touched.
+async function trimOldestSegmentFiles(sessionDir, limitBytes, currentTotalBytes, filePattern) {
+  if (!limitBytes || currentTotalBytes <= limitBytes) return currentTotalBytes;
+
+  let files;
+  try {
+    files = await fs.promises.readdir(sessionDir);
+  } catch {
+    return currentTotalBytes;
+  }
+
+  const matches = files
+    .map((fileName) => {
+      const match = filePattern.exec(fileName);
+      return match ? { fileName, index: Number(match[1]) } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.index - b.index);
+
+  if (matches.length === 0) return currentTotalBytes;
+  const currentIndex = matches[matches.length - 1].index;
+
+  let total = currentTotalBytes;
+  for (const { fileName, index } of matches) {
+    if (index === currentIndex || total <= limitBytes) break;
+
+    const filePath = path.join(sessionDir, fileName);
+    try {
+      const stat = await fs.promises.stat(filePath);
+      await fs.promises.rm(filePath, { force: true });
+      total -= stat.size;
+    } catch {
+      // Already gone or locked — move on to the next file.
+    }
+  }
+
+  return total;
+}
+
 module.exports = {
   parseSizeLimit,
   getDirectorySize,
   enforceFolderQuota,
   trimActiveSessionSegments,
+  trimOldestSegmentFiles,
 };

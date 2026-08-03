@@ -5,6 +5,10 @@ const { normalizeFfmpegPath } = require("./obsRecordingService");
 const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
 const { parseSizeLimit, getDirectorySize, enforceFolderQuota, trimActiveSessionSegments } = require("./storageQuotaService");
 const { logEvent } = require("./eventLogService");
+const { formatWallClockTimecode } = require("./timecodeFormat");
+const { probeSegment } = require("./segmentProbeService");
+const { createSessionFolder, clamp } = require("./sessionFolder");
+const db = require("../db");
 
 const MAINTENANCE_INTERVAL_MS = 5000;
 
@@ -55,6 +59,9 @@ class ObsIngestService {
     this.sessionFolderName = null;
     this.backupDir = null;
     this.copiedBackupSegments = new Set();
+    this.dbSessionId = null;
+    this.dbKnownSegments = new Set();
+    this.dbFrameRate = 25;
     // Tracks whether the underlying FFmpeg OS process has actually exited — distinct from
     // `this.process` being nulled, which can happen before the process finishes flushing its
     // last segment during graceful shutdown (stdin "q" + up to 5s grace period).
@@ -84,7 +91,7 @@ class ObsIngestService {
     // identical across both outputs even though ProRes encoding and H.264 stream-copy run
     // at different real-time speeds — using "-strftime 1" per output instead would let
     // their filenames drift apart over time.
-    const sessionFolderName = createSessionFolder(this.recordingsPath, new Date());
+    const sessionFolderName = createSessionFolder(this.recordingsPath, "emerald", new Date());
     const sessionDir = path.join(this.recordingsPath, sessionFolderName);
     const archivalOutputPattern = path.join(sessionDir, "emerald-%03d.mov");
     const outputPattern = path.join(sessionDir, "emerald-%03d.mp4");
@@ -186,9 +193,22 @@ class ObsIngestService {
 
     const startedProcess = this.process;
 
+    // Throttled: a degraded/corrupted input signal can make ffmpeg's decoder emit a continuous
+    // flood of stderr lines (observed: thousands/sec of "non-existing PPS referenced" /
+    // "decode_slice_header error" while the incoming stream was unstable) — reacting to every
+    // single chunk with an object-spread state update was enough to starve the whole Node event
+    // loop, making even trivial synchronous routes like /api/obs-recording/status take 10+
+    // seconds to answer. The underlying signal issue is real and still worth investigating, but
+    // this process shouldn't fall over just relaying its last error message to the UI.
+    let lastStderrUpdateAt = 0;
+    const STDERR_UPDATE_THROTTLE_MS = 250;
     startedProcess.stderr.on("data", (chunk) => {
+      const now = Date.now();
+      if (now - lastStderrUpdateAt < STDERR_UPDATE_THROTTLE_MS) return;
+
       const message = chunk.toString().trim();
       if (message) {
+        lastStderrUpdateAt = now;
         this.recordingStatus = { ...this.recordingStatus, lastMessage: message };
       }
     });
@@ -202,14 +222,21 @@ class ObsIngestService {
       }
       this.ffmpegExited = true;
       this.stopMaintenance({ finalSync: true });
+      db.recordSessionStop(sessionFolderName, { stoppedAt: new Date(), status: "crashed", lastMessage: error.message })
+        .catch((dbError) => console.error("Unable to record session stop in database:", dbError.message));
     });
 
-    startedProcess.on("exit", () => {
+    startedProcess.on("exit", (code, signal) => {
       const detail = explainFfmpegMessage(this.recordingStatus.lastMessage || "FFmpeg stopped.", inputUrl);
       this.recordingStatus = { ...this.recordingStatus, isRecording: false, lastMessage: detail };
       this.process = null;
       this.ffmpegExited = true;
       this.stopMaintenance({ finalSync: true });
+      db.recordSessionStop(sessionFolderName, {
+        stoppedAt: new Date(),
+        status: code === 0 || signal === null ? "stopped" : "crashed",
+        lastMessage: detail,
+      }).catch((dbError) => console.error("Unable to record session stop in database:", dbError.message));
     });
 
     this.recordingStatus = {
@@ -232,6 +259,9 @@ class ObsIngestService {
     this.storageSizeLimitBytes = storageSizeLimitBytes;
     this.broadcastDelaySeconds = broadcastDelaySeconds;
     this.copiedBackupSegments = new Set();
+    this.dbSessionId = null;
+    this.dbKnownSegments = new Set();
+    this.dbFrameRate = clamp(Number(request.frameRate || 25), 1, 240);
 
     if (backupDir) {
       this.backupDir = backupDir;
@@ -244,9 +274,39 @@ class ObsIngestService {
     this.scheduleMaintenance();
     this.scheduleTxPlaylistUpdate();
 
+    // Codec/format details here reflect what the ffmpeg command above is actually configured to
+    // do — RecordingSegment rows separately record what ffprobe verifies was really written to
+    // each finished .mov, since the "0:a:0?" audio map is optional and silently no-ops when the
+    // source has no embedded audio.
+    db.recordSessionStart({
+      folderName: sessionFolderName,
+      startedAt: new Date(),
+      startTimecode: formatWallClockTimecode(new Date(), this.dbFrameRate),
+      frameRate: this.dbFrameRate,
+      inputUrl,
+      segmentSeconds,
+      broadcastDelaySeconds,
+      videoCodecArchival: "prores_ks",
+      videoProfileArchival: "ProRes 422 (profile 2)",
+      pixelFormatArchival: "yuv422p10le",
+      videoCodecPlayout: "h264 (stream copy)",
+      audioCodec: "aac",
+      audioBitrateKbps: 192,
+      backupPath,
+      backupAvailable: Boolean(backupDir),
+    })
+      .then((session) => { this.dbSessionId = session.id; })
+      .catch((error) => console.error("Unable to record session in database:", error.message));
+
     await waitForFfmpegStartup(startedProcess, ffmpegPath, () => this.recordingStatus.lastMessage, inputUrl);
 
-    logEvent(`Recording started — folder=${sessionFolderName}, segmentSeconds=${segmentSeconds}, broadcastDelaySeconds=${broadcastDelaySeconds}`);
+    logEvent(`Recording started — folder=${sessionFolderName}, segmentSeconds=${segmentSeconds}, broadcastDelaySeconds=${broadcastDelaySeconds}`, "info", "Recorder");
+    // Companion lines matching the fixed archival/proxy pipeline this ffmpeg command always runs
+    // (see the "-c:v prores_ks"/"-segment_format mov" and "-c:v copy"/"-segment_format mp4" legs
+    // above) — not derived from the UI's format dropdowns, which don't actually control this.
+    logEvent("Capture session started.", "info", "Recorder");
+    logEvent("High-res recording -> ProRes 422 MOV.", "info", "Recorder");
+    logEvent("Proxy recording -> H264 MP4.", "info", "Recorder");
 
     return { recordingStatus: this.recordingStatus };
   }
@@ -329,6 +389,7 @@ class ObsIngestService {
   // quotas so overflow is trimmed continuously instead of only at session boundaries.
   async runMaintenance() {
     await this.updateLiveTxPlaylist();
+    await this.reconcileSegments();
 
     if (this.backupDir) {
       await this.syncBackupSegments();
@@ -369,6 +430,96 @@ class ObsIngestService {
           await trimActiveSessionSegments(backupSessionDir, this.storageSizeLimitBytes, backupTotalBytes);
         }
       }
+    }
+  }
+
+  // Records any emerald-NNN.mov segment that's actually finished (same "last one is still being
+  // written" rule as syncBackupSegments) and isn't in the database yet — a plain size/filename
+  // row immediately, then kicks off an ffprobe of the .mov in the background to fill in verified
+  // codec/duration/audio details once it completes. Runs every maintenance tick regardless of
+  // whether a backup drive is configured, unlike syncBackupSegments.
+  async reconcileSegments() {
+    if (!this.dbSessionId || !this.sessionFolderName) return;
+
+    const sessionDir = path.join(this.recordingsPath, this.sessionFolderName);
+    let files;
+    try {
+      files = await fs.promises.readdir(sessionDir);
+    } catch {
+      return;
+    }
+
+    const pattern = /^emerald-(\d+)\.mov$/;
+    const segments = files
+      .map((fileName) => {
+        const match = pattern.exec(fileName);
+        return match ? { fileName, index: Number(match[1]) } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.index - b.index);
+
+    const finishedSegments = this.ffmpegExited ? segments : segments.slice(0, -1);
+    if (finishedSegments.length === 0) return;
+
+    const sessionStartedAt = new Date(this.recordingStatus.startedAt);
+    const segmentSeconds = this.recordingStatus.segmentSeconds || 120;
+
+    for (const segment of finishedSegments) {
+      if (this.dbKnownSegments.has(segment.index)) continue;
+
+      const movPath = path.join(sessionDir, segment.fileName);
+      const mp4FileName = segment.fileName.replace(/\.mov$/, ".mp4");
+      const mp4Path = path.join(sessionDir, mp4FileName);
+
+      let movStat;
+      try {
+        movStat = await fs.promises.stat(movPath);
+      } catch {
+        continue;
+      }
+
+      let mp4Size = null;
+      try {
+        mp4Size = (await fs.promises.stat(mp4Path)).size;
+      } catch {
+        // mp4 leg can finish a beat later than mov — picked up on a later tick.
+      }
+
+      const startTimecode = formatWallClockTimecode(
+        new Date(sessionStartedAt.getTime() + segment.index * segmentSeconds * 1000),
+        this.dbFrameRate,
+      );
+
+      let saved;
+      try {
+        saved = await db.upsertSegment(this.dbSessionId, {
+          segmentIndex: segment.index,
+          movFileName: segment.fileName,
+          mp4FileName,
+          movSizeBytes: movStat.size,
+          mp4SizeBytes: mp4Size,
+          startTimecode,
+          createdAt: movStat.birthtime,
+        });
+      } catch (error) {
+        console.error(`Unable to record segment '${segment.fileName}' in database:`, error.message);
+        continue;
+      }
+
+      this.dbKnownSegments.add(segment.index);
+
+      logEvent(`Recording segment created. Duration=${segmentSeconds} sec`, "info", "Recorder");
+      logEvent(`${segment.fileName} created`, "info", "FileWriter");
+      // mp4Size can still be null here (see the catch above) if the proxy leg hasn't finished
+      // closing yet — this index won't be revisited (dbKnownSegments guards against that), so a
+      // "created" line for it just doesn't fire this run rather than firing early/falsely.
+      if (mp4Size != null) {
+        logEvent(`${mp4FileName} created`, "info", "FileWriter");
+      }
+
+      probeSegment(movPath)
+        .then((probed) => db.updateSegmentProbe(saved.id, probed))
+        .catch((error) => console.error(`Unable to probe segment '${segment.fileName}':`, error.message));
     }
   }
 
@@ -626,39 +777,6 @@ function resolveBackupDir() {
     // Backup drive not present/writable (e.g. removable drive unplugged) — record locally only.
     return { backupDir: null, backupPath };
   }
-}
-
-// Folder name is "emerald" + local time as MMDDYYYYHHmm (e.g. 4:31 AM on 2026-03-07 ->
-// "emerald030720260431"). Local time, not UTC, since it's meant to read as a wall-clock
-// timestamp for whoever is browsing the recordings folder.
-function formatSessionFolderName(date) {
-  const pad = (value, length = 2) => String(value).padStart(length, "0");
-
-  return `emerald${pad(date.getMonth() + 1)}${pad(date.getDate())}${date.getFullYear()}`
-    + `${pad(date.getHours())}${pad(date.getMinutes())}`;
-}
-
-// Same-minute restarts would otherwise collide on one folder name — suffix with -2, -3, ...
-function createSessionFolder(recordingsPath, date) {
-  const baseName = formatSessionFolderName(date);
-  let folderName = baseName;
-  let suffix = 2;
-
-  while (fs.existsSync(path.join(recordingsPath, folderName))) {
-    folderName = `${baseName}-${suffix}`;
-    suffix += 1;
-  }
-
-  fs.mkdirSync(path.join(recordingsPath, folderName), { recursive: true });
-  return folderName;
-}
-
-function clamp(value, min, max) {
-  if (Number.isNaN(value)) {
-    return min;
-  }
-
-  return Math.min(Math.max(value, min), max);
 }
 
 function waitForFfmpegStartup(process, ffmpegPath, getLastMessage, inputUrl) {

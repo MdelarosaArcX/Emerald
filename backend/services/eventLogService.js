@@ -13,9 +13,14 @@ function formatWallClockTimecode(date, fps = 25) {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
 }
 
-function logEvent(message) {
+const LEVELS = new Set(["info", "warn", "error"]);
+
+// source groups log lines by where they came from (Recorder, FileWriter, Audio, DeltaRX{n}, TX,
+// System, ...) — shown as its own column in the Capture page's Capture Logs tab.
+function logEvent(message, level = "info", source = "System") {
+  const normalizedLevel = LEVELS.has(level) ? level : "info";
   const now = new Date();
-  const line = `[${now.toISOString()}] [tc ${formatWallClockTimecode(now)}] ${message}\n`;
+  const line = `[${now.toISOString()}] [${normalizedLevel.toUpperCase()}] [tc ${formatWallClockTimecode(now)}] [${source}] ${message}\n`;
 
   try {
     fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
@@ -27,7 +32,49 @@ function logEvent(message) {
   console.log(`[event] ${line.trim()}`);
 }
 
+// Parses logs.txt back into structured rows for the frontend's Capture Logs tab. Tolerates lines
+// written before the [LEVEL]/[SOURCE] tags existed (defaults to "info"/"System") so old log
+// history still renders.
+const LOG_LINE_PATTERN = /^\[(.+?)\] \[(INFO|WARN|ERROR)\] \[tc (.+?)\] \[(.+?)\] (.*)$/;
+const PRE_SOURCE_LOG_LINE_PATTERN = /^\[(.+?)\] \[(INFO|WARN|ERROR)\] \[tc (.+?)\] (.*)$/;
+const LEGACY_LOG_LINE_PATTERN = /^\[(.+?)\] \[tc (.+?)\] (.*)$/;
+
+function readRecentEvents(limit = 200) {
+  let contents;
+  try {
+    contents = fs.readFileSync(LOG_PATH, "utf8");
+  } catch (error) {
+    return [];
+  }
+
+  const lines = contents.split("\n").filter((line) => line.trim().length > 0);
+  const recentLines = lines.slice(-Math.max(1, limit));
+
+  return recentLines.map((line, index) => {
+    const match = LOG_LINE_PATTERN.exec(line);
+    if (match) {
+      const [, timestamp, level, tc, source, message] = match;
+      return { id: index, timestamp, level: level.toLowerCase(), tc, source, message };
+    }
+
+    const preSourceMatch = PRE_SOURCE_LOG_LINE_PATTERN.exec(line);
+    if (preSourceMatch) {
+      const [, timestamp, level, tc, message] = preSourceMatch;
+      return { id: index, timestamp, level: level.toLowerCase(), tc, source: "System", message };
+    }
+
+    const legacyMatch = LEGACY_LOG_LINE_PATTERN.exec(line);
+    if (legacyMatch) {
+      const [, timestamp, tc, message] = legacyMatch;
+      return { id: index, timestamp, level: "info", tc, source: "System", message };
+    }
+
+    return { id: index, timestamp: null, level: "info", tc: null, source: "System", message: line };
+  });
+}
+
 module.exports = {
   logEvent,
+  readRecentEvents,
   formatWallClockTimecode,
 };
