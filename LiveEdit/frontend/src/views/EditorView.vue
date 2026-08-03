@@ -11,11 +11,14 @@ import InspectorPanel from '@/components/inspector/InspectorPanel.vue';
 import ProgramMonitor from '@/components/monitor/ProgramMonitor.vue';
 import PlaybackMonitor from '@/components/monitor/PlaybackMonitor.vue';
 import TimelineEditor from '@/components/timeline/TimelineEditor.vue';
+import { fetchActiveRecording, fetchSessionSegments } from '@/services/emeraldPreview';
 import { useCaptureStore } from '@/stores/captureStore';
+import { useIngestStore } from '@/stores/ingestStore';
 import { usePlaybackStore } from '@/stores/playbackStore';
 import { useProgramStore } from '@/stores/programStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useTimelineStore } from '@/stores/timelineStore';
+import { useIntervalFn } from '@vueuse/core';
 import 'splitpanes/dist/splitpanes.css';
 import { Pane, Splitpanes } from 'splitpanes';
 import { onMounted, ref, watch } from 'vue';
@@ -25,6 +28,25 @@ const playbackStore = usePlaybackStore();
 const captureStore = useCaptureStore();
 const programStore = useProgramStore();
 const settingsStore = useSettingsStore();
+const ingestStore = useIngestStore();
+
+// Live ingest: while a live recording session is loaded, poll for newly-recorded segments and
+// append them to the timeline so the editor keeps receiving what the recorder is writing.
+useIntervalFn(async () => {
+  const folder = ingestStore.liveFolder;
+  if (!folder) return;
+  const [segs, status] = await Promise.all([fetchSessionSegments(folder), fetchActiveRecording()]);
+  if (segs.length) {
+    timelineStore.appendSessionSegments({
+      folder,
+      fps: timelineStore.fps,
+      nominalSeconds: ingestStore.segmentSeconds,
+      segments: segs.map((s) => ({ fileName: s.fileName, url: s.url, thumbnail: s.thumbnailUrl, index: s.index })),
+    });
+  }
+  ingestStore.setRecording(status.isRecording);
+  if (!status.isRecording || status.folder !== folder) ingestStore.stopLive();
+}, 6000);
 
 // The information/inspector drawer ("Video / Audio FX") is collapsed by default so the timeline
 // spans the full width, matching the broadcast layout. Toggled from the right-panel FX tab or the

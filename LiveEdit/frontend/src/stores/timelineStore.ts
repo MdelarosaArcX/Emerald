@@ -26,6 +26,46 @@ function newTrackId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
 }
 
+/**
+ * Build one recorded segment as a clip on the shared session track, placed at `start`.
+ * Stable id per folder+file so live appends never double-add.
+ */
+function makeSegmentClip(
+  folder: string,
+  seg: number,
+  s: { fileName: string; url: string; thumbnail?: string },
+  start: number,
+  trackId: string,
+): Clip {
+  return {
+    id: `c-${folder}-${s.fileName}`,
+    name: s.fileName,
+    path: s.url,
+    track: trackId,
+    start,
+    duration: seg,
+    trimIn: 0,
+    trimOut: seg,
+    color: '#14b8a6',
+    effects: [],
+    type: 'video',
+    thumbnail: s.thumbnail,
+    opacity: 100,
+    rotation: 0,
+    scale: 100,
+    position: { x: 0, y: 0 },
+    speed: 1,
+    volume: 100,
+    locked: false,
+    autoFit: true,
+  };
+}
+
+/** The single video lane every session segment is placed on. */
+function makeSessionTrack(trackId: string, clips: Clip[]): Track {
+  return { id: trackId, name: 'V1', kind: 'video', order: 0, height: 56, locked: false, visible: true, muted: false, solo: false, clips };
+}
+
 export const useTimelineStore = defineStore('timeline', {
   state: (): TimelineState => ({
     timeline: null,
@@ -93,7 +133,9 @@ export const useTimelineStore = defineStore('timeline', {
 
     setPlayhead(frames: number, emit = true): void {
       if (!this.timeline) return;
-      this.timeline.playhead = Math.max(0, Math.min(frames, this.timeline.duration));
+      const dur = Number.isFinite(this.timeline.duration) ? this.timeline.duration : 0;
+      const f = Number.isFinite(frames) ? frames : 0;
+      this.timeline.playhead = Math.max(0, Math.min(f, dur));
       if (emit) {
         getSocket().emit(SOCKET_EVENTS.PLAYHEAD_CHANGED, { playhead: this.timeline.playhead });
       }
@@ -120,6 +162,7 @@ export const useTimelineStore = defineStore('timeline', {
         speed: 1,
         volume: 100,
         locked: false,
+        autoFit: true,
       };
       const videoClip: Clip = { ...base, id: 'program-clip', name: payload.name, track: 'v1', color: '#14b8a6', type: 'video', thumbnail: payload.thumbnail };
       const audioClip: Clip = { ...base, id: 'program-audio', name: `${payload.name} · audio`, track: 'a1', color: '#34d399', type: 'audio' };
@@ -142,7 +185,71 @@ export const useTimelineStore = defineStore('timeline', {
       if (clip) Object.assign(clip, patch);
     },
 
-    /** Insert a clip (dragged from the media browser) onto a track at a given start frame. */
+    /**
+     * Build a fresh timeline from a recording session's segments, laid out back-to-back on a video
+     * lane (+ paired audio). Used to load a whole session for editing; live sessions then keep
+     * appending via appendSessionSegments().
+     */
+    loadSession(payload: { folder: string; fps: number; nominalSeconds: number; segments: { fileName: string; url: string; thumbnail?: string; index: number }[] }): void {
+      const fps = Number.isFinite(payload.fps) && payload.fps > 0 ? payload.fps : 25;
+      const nominal = Number.isFinite(payload.nominalSeconds) && payload.nominalSeconds > 0 ? payload.nominalSeconds : 120;
+      const seg = Math.max(1, Math.round(nominal * fps));
+      const trackId = `t-${payload.folder}`;
+      // All segments share ONE video lane, segmented by file and laid out left→right by timecode
+      // (index × segment length) so they never overlap and the playhead sweeps across the sequence.
+      const clips: Clip[] = payload.segments
+        .map((s, i) => {
+          const idx = Number.isFinite(s.index) ? s.index : i;
+          return makeSegmentClip(payload.folder, seg, s, idx * seg, trackId);
+        })
+        .sort((a, b) => a.start - b.start);
+      const duration = clips.reduce((m, c) => Math.max(m, c.start + c.duration), seg);
+      this.timeline = {
+        id: `session-${payload.folder}`,
+        fps,
+        duration: Math.max(1, duration),
+        playhead: 0,
+        tracks: [makeSessionTrack(trackId, clips)],
+      };
+      this.selectedClipId = null;
+    },
+
+    /** Append newly-recorded segments onto the shared session lane, positioned by timecode. Returns how many were added. */
+    appendSessionSegments(payload: { folder: string; fps: number; nominalSeconds: number; segments: { fileName: string; url: string; thumbnail?: string; index: number }[] }): number {
+      if (!this.timeline) return 0;
+      const fps = Number.isFinite(payload.fps) && payload.fps > 0 ? payload.fps : (this.timeline.fps || 25);
+      const nominal = Number.isFinite(payload.nominalSeconds) && payload.nominalSeconds > 0 ? payload.nominalSeconds : 120;
+      const seg = Math.max(1, Math.round(nominal * fps));
+
+      const trackId = `t-${payload.folder}`;
+      let track = this.timeline.tracks.find((t) => t.id === trackId);
+      if (!track) {
+        track = makeSessionTrack(trackId, []);
+        this.timeline.tracks.push(track);
+      }
+      const existingClips = new Set(track.clips.map((c) => c.id));
+      let fallback = track.clips.length;
+      let end = Number.isFinite(this.timeline.duration) ? this.timeline.duration : 0;
+      let added = 0;
+      for (const s of payload.segments) {
+        if (existingClips.has(`c-${payload.folder}-${s.fileName}`)) continue;
+        const idx = Number.isFinite(s.index) ? s.index : fallback;
+        fallback += 1;
+        const clip = makeSegmentClip(payload.folder, seg, s, idx * seg, trackId);
+        track.clips.push(clip);
+        end = Math.max(end, clip.start + clip.duration);
+        added += 1;
+      }
+      if (added) {
+        track.clips.sort((a, b) => a.start - b.start);
+        this.timeline.duration = end;
+      }
+      return added;
+    },
+
+    /** Insert a clip (dragged from the media browser) onto a track at a given start frame. If it
+     * would overlap an existing clip on the target track, a new track is created for it so clips
+     * never overlap in time on the same lane. */
     addClipFromSource(payload: {
       name: string;
       url: string;
@@ -152,18 +259,29 @@ export const useTimelineStore = defineStore('timeline', {
       startFrame: number;
       kind?: 'video' | 'audio';
     }): string | null {
-      const track = this.timeline?.tracks.find((t) => t.id === payload.trackId);
+      let track = this.timeline?.tracks.find((t) => t.id === payload.trackId);
       if (!this.timeline || !track || track.locked) return null;
 
-      const duration = Math.max(1, Math.round(payload.durationFrames));
+      const duration = Number.isFinite(payload.durationFrames) ? Math.max(1, Math.round(payload.durationFrames)) : 1;
       const isAudio = payload.kind === 'audio' || track.kind === 'audio';
+      const start = Number.isFinite(payload.startFrame) ? Math.max(0, Math.round(payload.startFrame)) : 0;
+
+      // If the drop overlaps an existing clip on this track, put it on a fresh track instead.
+      const overlaps = (t: Track): boolean =>
+        t.clips.some((c) => start < c.start + c.duration && c.start < start + duration);
+      if (overlaps(track)) {
+        const newId = this.addTrack(isAudio ? 'audio' : 'video');
+        const created = this.timeline.tracks.find((t) => t.id === newId);
+        if (created) track = created;
+      }
+
       const id = newClipId();
       const clip: Clip = {
         id,
         name: payload.name,
         path: payload.url,
-        track: payload.trackId,
-        start: Math.max(0, Math.round(payload.startFrame)),
+        track: track.id,
+        start,
         duration,
         trimIn: 0,
         trimOut: duration,
@@ -178,6 +296,7 @@ export const useTimelineStore = defineStore('timeline', {
         speed: 1,
         volume: 100,
         locked: false,
+        autoFit: true,
       };
       track.clips.push(clip);
       this.timeline.duration = Math.max(this.timeline.duration, clip.start + clip.duration);
@@ -217,11 +336,40 @@ export const useTimelineStore = defineStore('timeline', {
         duration: clip.duration - offset,
         trimIn: clip.trimIn + offset,
         trimOut: clip.trimOut,
+        autoFit: false,
       };
       clip.duration = offset;
       clip.trimOut = clip.trimIn + offset;
+      clip.autoFit = false;
       track.clips.push(right);
       this.selectedClipId = right.id;
+    },
+
+    /**
+     * Fit a freshly-added clip (and its same-source siblings, e.g. the paired audio) to the real
+     * source duration once known — capped so it never overlaps the next clip on the same lane.
+     */
+    fitClipToSource(clipId: string, realDurationFrames: number): void {
+      if (!this.timeline) return;
+      if (!Number.isFinite(realDurationFrames) || realDurationFrames <= 0) return;
+      const origin = this.allClips.find((c) => c.id === clipId);
+      if (!origin || !origin.autoFit) return;
+      const wanted = Math.max(1, Math.round(realDurationFrames));
+
+      for (const track of this.timeline.tracks) {
+        for (const c of track.clips) {
+          if (!c.autoFit || c.path !== origin.path || c.trimIn !== 0) continue;
+          const nextStart = track.clips
+            .filter((o) => o !== c && o.start > c.start)
+            .reduce((min, o) => Math.min(min, o.start), Number.POSITIVE_INFINITY);
+          const cap = Number.isFinite(nextStart) ? nextStart - c.start : Number.POSITIVE_INFINITY;
+          const d = Math.max(1, Math.min(wanted, cap));
+          c.duration = d;
+          c.trimOut = c.trimIn + d;
+          c.autoFit = false;
+          this.timeline.duration = Math.max(this.timeline.duration, c.start + d);
+        }
+      }
     },
 
     /** Remove a clip from the timeline. */

@@ -9,6 +9,7 @@ import TimelinePlayhead from '@/components/timeline/TimelinePlayhead.vue';
 import TimelineRuler from '@/components/timeline/TimelineRuler.vue';
 import TimelineTrack from '@/components/timeline/TimelineTrack.vue';
 import { renderSequence } from '@/services/render';
+import { useIngestStore } from '@/stores/ingestStore';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useTimecode } from '@/composables/useTimecode';
 import {
@@ -19,6 +20,7 @@ import {
   EyeSlashIcon,
   LockClosedIcon,
   LockOpenIcon,
+  FolderIcon,
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
   PlusIcon,
@@ -28,7 +30,7 @@ import {
   TrashIcon,
   XMarkIcon,
 } from '@heroicons/vue/24/outline';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import draggable from 'vuedraggable';
 import type { Track } from '@/types/clip';
 
@@ -36,6 +38,7 @@ defineProps<{ inspectorOpen?: boolean }>();
 const emit = defineEmits<{ toggleInspector: [] }>();
 
 const timelineStore = useTimelineStore();
+const ingestStore = useIngestStore();
 const { framesToTimecode } = useTimecode(timelineStore.fps);
 const playheadTimecode = computed(() => framesToTimecode(timelineStore.playhead));
 const hasSelection = computed(() => timelineStore.selectedClip !== null);
@@ -115,6 +118,20 @@ const trackList = computed<Track[]>({
 
 const scrollRef = ref<HTMLElement | null>(null);
 
+// Follow the playhead: keep it pinned ~30% from the left edge and let the timeline scroll smoothly
+// underneath as it plays. Because the playhead updates every animation frame during playback, this
+// assignment tracks it smoothly. Before it reaches the 30% mark it simply moves out from the left.
+const PLAYHEAD_ANCHOR = 0.3;
+watch(
+  () => timelineStore.playhead,
+  (frame) => {
+    const el = scrollRef.value;
+    if (!el) return;
+    const x = frame * pixelsPerFrame.value;
+    el.scrollLeft = Math.max(0, x - el.clientWidth * PLAYHEAD_ANCHOR);
+  },
+);
+
 function handleScrub(frames: number): void {
   timelineStore.setPlayhead(frames);
 }
@@ -154,6 +171,17 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
           {{ playheadTimecode }}
         </span>
         <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Timeline</h2>
+        <span
+          v-if="ingestStore.loadedFolder"
+          class="flex items-center gap-1.5 rounded-md border border-white/5 bg-surface-800 px-2 py-1 font-mono text-[10px] text-slate-300"
+          :title="`Loaded session: ${ingestStore.loadedFolder}`"
+        >
+          <FolderIcon class="h-3 w-3 text-emerald-400" />
+          <span class="max-w-[160px] truncate">{{ ingestStore.loadedFolder }}</span>
+          <span v-if="ingestStore.liveFolder" class="flex items-center gap-1 rounded-full bg-rose-500/20 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-rose-300">
+            <span class="h-1.5 w-1.5 animate-blink rounded-full bg-rose-500" /> Live
+          </span>
+        </span>
       </div>
       <div class="flex items-center gap-2">
         <button
