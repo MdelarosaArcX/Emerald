@@ -40,6 +40,6 @@ const tabs: { id: LeftTab; label: string }[] = [
     </div>
 
     <CapturePreview v-show="activeTab === 'capture'" />
-    <ClipBrowser v-if="activeTab === 'media'" />
+    <ClipBrowser v-if="activeTab === 'media'" gallery />
   </div>
 </template>

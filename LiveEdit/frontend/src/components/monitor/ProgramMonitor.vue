@@ -74,26 +74,63 @@ const activeMuted = computed(() => {
 });
 const meterLevel = computed(() => (isPlaying.value && !activeMuted.value ? volume.value : 0));
 
-// --- Proxy: request a playable version whenever the active clip's source changes ---
+// --- Playback source -------------------------------------------------------------------------
+// The <video> plays a lightweight, browser-friendly PROXY (480p faststart) of the active clip —
+// the raw Emerald segments are large, non-faststart 4K files that stall the browser. While a proxy
+// is still transcoding, the clip thumbnail is shown and a synthetic clock keeps the playhead
+// sweeping; playback hands off to the real video the moment its proxy is ready.
 let proxyToken = 0;
+const proxyCache = new Map<string, string>(); // source URL → proxy URL (avoid re-requesting)
+
+async function ensureProxy(src: string): Promise<string> {
+  if (!/^https?:/i.test(src)) return '';
+  const cached = proxyCache.get(src);
+  if (cached) return cached;
+  const url = (await requestProxy(src)) ?? '';
+  if (url) proxyCache.set(src, url);
+  return url;
+}
+
+const PREFETCH_AHEAD = 3;
+/** Source paths of the next few clips after the active one, in order (for prefetching proxies). */
+function upcomingSources(): string[] {
+  const a = active.value;
+  if (!a) return [];
+  return a.track.clips
+    .filter((c) => c.start > a.clip.start && /^https?:/i.test(c.path))
+    .sort((x, y) => x.start - y.start)
+    .slice(0, PREFETCH_AHEAD)
+    .map((c) => c.path);
+}
+/** Warm the next few clips' proxies so boundary crossings play without a transcode gap. */
+function prefetchAhead(): void {
+  for (const src of upcomingSources()) void ensureProxy(src);
+}
+
 watch(
   activeSource,
   async (src) => {
     proxyUrl.value = '';
-    stopRaf();
     if (!/^https?:/i.test(src)) {
       proxyLoading.value = false;
       return;
     }
     const token = ++proxyToken;
     proxyLoading.value = true;
-    const url = await requestProxy(src);
+    prefetchAhead(); // start warming upcoming clips immediately, in parallel with this one
+    const url = await ensureProxy(src);
     if (token !== proxyToken) return; // superseded by a newer active clip
     proxyLoading.value = false;
-    proxyUrl.value = url ?? '';
+    proxyUrl.value = url;
+    prefetchAhead();
   },
   { immediate: true },
 );
+
+// A proxy is available once we have its URL. Note this is a *relative* path (e.g. "/proxies/x.mp4")
+// served by our own dev server / backend — do NOT test it against /^https?:/ (that check was the bug
+// that kept the <video> hidden and left only the thumbnail showing).
+const hasVideo = computed(() => proxyUrl.value.length > 0);
 
 watch(proxyUrl, (url) => {
   const v = videoRef.value;
@@ -101,6 +138,7 @@ watch(proxyUrl, (url) => {
   if (url) {
     v.src = url;
     v.muted = activeMuted.value;
+    v.playbackRate = speed.value;
     v.load();
   } else {
     v.removeAttribute('src');
@@ -116,35 +154,50 @@ function sourceSecondsAt(frame: number): number {
   if (!a) return 0;
   return Math.max(0, (frame - a.clip.start + (a.clip.trimIn ?? 0)) / fps.value);
 }
-function seekToPlayhead(): void {
-  const v = videoRef.value;
-  if (!v || !proxyUrl.value) return;
-  const t = sourceSecondsAt(timelineStore.playhead);
-  if (Number.isFinite(t) && Math.abs(v.currentTime - t) > 0.15) v.currentTime = t;
+
+/**
+ * Start the video, surviving the browser's autoplay policy: if a play with audio is rejected
+ * (proxy finished after the click, so no fresh user gesture), retry muted, then restore audio.
+ */
+function playVideo(v: HTMLVideoElement): void {
+  const p = v.play();
+  if (p && typeof p.catch === 'function') {
+    p.catch(() => {
+      v.muted = true;
+      v.play()
+        .then(() => {
+          v.muted = activeMuted.value;
+        })
+        .catch(() => {});
+    });
+  }
 }
+
 function onLoadedData(): void {
   const v = videoRef.value;
   if (!v) return;
   v.playbackRate = speed.value;
-  seekToPlayhead();
-  if (isPlaying.value) v.play().catch(() => {});
+  // Fit the (placeholder-length) clip to the real source duration so the slot reflects the actual
+  // segment length (capped at the next clip so lanes never overlap).
+  const a = active.value;
+  if (a && a.clip.autoFit && Number.isFinite(v.duration) && v.duration > 0) {
+    timelineStore.fitClipToSource(a.clip.id, Math.round(v.duration * fps.value));
+  }
+  v.currentTime = sourceSecondsAt(timelineStore.playhead);
+  if (isPlaying.value) playVideo(v); // hand off from the synthetic clock to real video
 }
 
-// video → timeline while playing (guarded so the playhead watcher below won't seek back)
-function onTimeUpdate(): void {
-  const v = videoRef.value;
-  const a = active.value;
-  if (!v || !a || !isPlaying.value || !proxyUrl.value) return;
-  const c = a.clip;
-  const frame = Math.round(c.start + v.currentTime * fps.value - (c.trimIn ?? 0));
-  if (frame >= c.start + c.duration - 1) {
-    advanceToNextClip();
-    return;
-  }
-  timelineStore.setPlayhead(Math.max(c.start, frame), false);
-}
+// --- Playhead: video-driven while a proxy plays, synthetic while one transcodes ---------------
+// The real <video> is the clock when present (the rAF loop reads its currentTime each frame so the
+// playhead tracks decoded video 1:1 — smooth, no seek-thrash), so the whole segment plays through.
+// When there is no proxy yet the loop advances the playhead itself so it still sweeps over the
+// thumbnail. onVideoEnded is a safety net for the clip→clip boundary.
 function onVideoEnded(): void {
-  advanceToNextClip();
+  if (isPlaying.value) advanceToNextClip();
+}
+// If a proxy fails to load/decode, don't freeze the sequence — skip past this clip while playing.
+function onVideoError(): void {
+  if (isPlaying.value) advanceToNextClip();
 }
 function advanceToNextClip(): void {
   const a = active.value;
@@ -159,60 +212,85 @@ function advanceToNextClip(): void {
     return;
   }
   timelineStore.setPlayhead(next, false); // active changes → next proxy loads and auto-plays
+  pos = next;
 }
 
-// timeline → video on external scrub
+// External scrub (ruler click / step / jump): move the video to the playhead when paused.
 watch(
   () => timelineStore.playhead,
   (frame) => {
     const v = videoRef.value;
-    const a = active.value;
-    if (!v || !a || !proxyUrl.value) return;
-    const videoFrame = Math.round(a.clip.start + v.currentTime * fps.value - (a.clip.trimIn ?? 0));
-    if (Math.abs(videoFrame - frame) <= 1) return; // originated from the video
-    v.currentTime = sourceSecondsAt(frame);
+    if (!v || !hasVideo.value || isPlaying.value) return;
+    const want = sourceSecondsAt(frame);
+    if (Number.isFinite(want) && Math.abs(v.currentTime - want) > 0.2) v.currentTime = want;
   },
 );
 
-// --- Fallback playback loop (thumbnail-only clips / while a proxy generates) ---
 let rafId = 0;
 let lastTs = 0;
 let pos = 0;
-function rafLoop(ts: number): void {
-  if (!isPlaying.value || proxyUrl.value) {
-    stopRaf();
+function loop(ts: number): void {
+  if (!isPlaying.value) {
+    rafId = 0;
     return;
   }
   if (!lastTs) lastTs = ts;
-  pos += ((ts - lastTs) / 1000) * fps.value * speed.value;
+  const dt = (ts - lastTs) / 1000;
   lastTs = ts;
-  if (pos >= timelineStore.duration) {
-    timelineStore.setPlayhead(timelineStore.duration, false);
-    pause();
-    return;
+  const v = videoRef.value;
+  const a = active.value;
+  if (hasVideo.value && v && a) {
+    // A proxy is loaded: the video is the clock. Keep it playing (recover from autoplay blocks or
+    // brief stalls) and read its decoded position each frame. Never advance the playhead past the
+    // video, so "video playing" and "playhead moving" stay one and the same.
+    if (v.paused && v.readyState >= 2) playVideo(v);
+    if (v.readyState >= 1) {
+      const c = a.clip;
+      const frame = Math.round(c.start + v.currentTime * fps.value - (c.trimIn ?? 0));
+      if (frame >= c.start + c.duration - 1) {
+        advanceToNextClip();
+      } else {
+        timelineStore.setPlayhead(Math.max(c.start, frame), false);
+        pos = timelineStore.playhead;
+      }
+    }
+    // readyState < 1 → still loading this clip; wait (the poster/thumbnail shows meanwhile).
+  } else {
+    // No proxy yet — advance the playhead ourselves so it keeps sweeping over the thumbnail.
+    pos += dt * fps.value * speed.value;
+    if (pos >= timelineStore.duration) {
+      timelineStore.setPlayhead(timelineStore.duration, false);
+      pause();
+      return;
+    }
+    timelineStore.setPlayhead(Math.round(pos), false);
   }
-  timelineStore.setPlayhead(Math.round(pos), false);
-  rafId = requestAnimationFrame(rafLoop);
-}
-function startRaf(): void {
-  pos = timelineStore.playhead >= timelineStore.duration ? 0 : timelineStore.playhead;
-  lastTs = 0;
-  rafId = requestAnimationFrame(rafLoop);
-}
-function stopRaf(): void {
-  if (rafId) cancelAnimationFrame(rafId);
-  rafId = 0;
+  rafId = requestAnimationFrame(loop);
 }
 
 function play(): void {
   if (timelineStore.duration <= 0) return;
+  // For a live broadcast, start playback at what's currently on air (the red on-air point) so the
+  // monitor follows the live feed. Otherwise resume from the playhead (rewinding if it's at the end).
+  if (timelineStore.onAirFrame > 0) {
+    timelineStore.setPlayhead(Math.min(timelineStore.onAirFrame, timelineStore.duration), false);
+  } else if (timelineStore.playhead >= timelineStore.duration) {
+    timelineStore.setPlayhead(0, false);
+  }
   isPlaying.value = true;
-  if (proxyUrl.value && videoRef.value) videoRef.value.play().catch(() => {});
-  else startRaf();
+  pos = timelineStore.playhead;
+  lastTs = 0;
+  const v = videoRef.value;
+  if (v && hasVideo.value) {
+    v.currentTime = sourceSecondsAt(timelineStore.playhead);
+    playVideo(v); // user gesture → authorized
+  }
+  if (!rafId) rafId = requestAnimationFrame(loop);
 }
 function pause(): void {
   isPlaying.value = false;
-  stopRaf();
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = 0;
   videoRef.value?.pause();
 }
 function stop(): void {
@@ -262,23 +340,24 @@ onBeforeUnmount(pause);
       </div>
 
       <div ref="frameRef" class="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-black">
-        <!-- Thumbnail frame (shown when no proxy is playing yet) -->
+        <!-- Thumbnail frame (shown only when there is no playable video source) -->
         <div
           v-if="active && active.clip.thumbnail"
-          v-show="!proxyUrl"
+          v-show="!hasVideo"
           class="absolute inset-0 bg-contain bg-center bg-no-repeat"
           :style="{ ...previewStyle, backgroundImage: `url(${active.clip.thumbnail})` }"
         />
-        <!-- Real proxy video -->
+        <!-- Real video: original segment by default, upgraded to the proxy when ready -->
         <video
-          v-show="active && proxyUrl"
+          v-show="active && hasVideo"
           ref="videoRef"
           class="absolute inset-0 h-full w-full object-contain"
           :style="previewStyle"
+          :poster="active?.clip.thumbnail"
           playsinline
           @loadeddata="onLoadedData"
-          @timeupdate="onTimeUpdate"
           @ended="onVideoEnded"
+          @error="onVideoError"
         />
 
         <div v-if="!active" class="pointer-events-none absolute inset-0 flex items-center justify-center bg-grid-fade px-6 text-center text-xs text-slate-600">
@@ -293,7 +372,7 @@ onBeforeUnmount(pause);
           <span v-if="(active.clip.opacity ?? 100) < 100" class="rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-slate-200 backdrop-blur">Opacity {{ active.clip.opacity }}%</span>
           <span v-if="activeMuted" class="rounded bg-rose-500/25 px-1.5 py-0.5 text-[9px] font-medium text-rose-300 backdrop-blur">MUTED</span>
         </div>
-        <div v-if="proxyLoading" class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-slate-200 backdrop-blur">
+        <div v-if="proxyLoading && !hasVideo" class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-slate-200 backdrop-blur">
           Preparing preview…
         </div>
       </div>
