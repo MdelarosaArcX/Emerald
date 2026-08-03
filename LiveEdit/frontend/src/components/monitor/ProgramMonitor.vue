@@ -270,7 +270,13 @@ function loop(ts: number): void {
 
 function play(): void {
   if (timelineStore.duration <= 0) return;
-  if (timelineStore.playhead >= timelineStore.duration) timelineStore.setPlayhead(0, false);
+  // For a live broadcast, start playback at what's currently on air (the red on-air point) so the
+  // monitor follows the live feed. Otherwise resume from the playhead (rewinding if it's at the end).
+  if (timelineStore.onAirFrame > 0) {
+    timelineStore.setPlayhead(Math.min(timelineStore.onAirFrame, timelineStore.duration), false);
+  } else if (timelineStore.playhead >= timelineStore.duration) {
+    timelineStore.setPlayhead(0, false);
+  }
   isPlaying.value = true;
   pos = timelineStore.playhead;
   lastTs = 0;

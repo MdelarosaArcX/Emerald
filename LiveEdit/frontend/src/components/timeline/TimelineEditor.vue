@@ -15,6 +15,7 @@ import { useTimecode } from '@/composables/useTimecode';
 import {
   AdjustmentsHorizontalIcon,
   ArrowDownTrayIcon,
+  ArrowPathIcon,
   Bars3Icon,
   EyeIcon,
   EyeSlashIcon,
@@ -109,6 +110,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 const BASE_PX_PER_FRAME = 3;
 const pixelsPerFrame = computed(() => BASE_PX_PER_FRAME * timelineStore.zoom);
 const contentWidth = computed(() => timelineStore.duration * pixelsPerFrame.value);
+// Pixel width of the red on-air band (clamped to the recorded/rendered length).
+const onAirX = computed(() => Math.min(timelineStore.onAirFrame, timelineStore.duration) * pixelsPerFrame.value);
 
 /** Drag-to-reorder track list; committing a new order writes back to the store. */
 const trackList = computed<Track[]>({
@@ -172,7 +175,15 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
         </span>
         <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Timeline</h2>
         <span
-          v-if="ingestStore.loadedFolder"
+          v-if="ingestStore.loading"
+          class="flex items-center gap-1.5 rounded-md border border-teal-400/40 bg-teal-400/10 px-2 py-1 font-mono text-[10px] text-teal-300"
+        >
+          <ArrowPathIcon class="h-3 w-3 animate-spin" />
+          Loading clips…
+          <span v-if="ingestStore.loadingFolder" class="max-w-[130px] truncate text-teal-200/70">{{ ingestStore.loadingFolder }}</span>
+        </span>
+        <span
+          v-else-if="ingestStore.loadedFolder"
           class="flex items-center gap-1.5 rounded-md border border-white/5 bg-surface-800 px-2 py-1 font-mono text-[10px] text-slate-300"
           :title="`Loaded session: ${ingestStore.loadedFolder}`"
         >
@@ -249,7 +260,18 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
       </div>
     </header>
 
-    <div class="flex min-h-0 flex-1 overflow-y-auto">
+    <div class="relative flex min-h-0 flex-1 overflow-y-auto">
+      <!-- Loading overlay while a session's clips are being fetched/loaded onto the timeline -->
+      <div
+        v-if="ingestStore.loading"
+        class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-surface-900/55 backdrop-blur-[1px]"
+      >
+        <div class="flex items-center gap-2.5 rounded-lg border border-teal-400/30 bg-surface-850/90 px-4 py-2.5 shadow-panel">
+          <ArrowPathIcon class="h-4 w-4 animate-spin text-teal-300" />
+          <span class="text-xs font-medium text-slate-200">Loading clips onto the timeline…</span>
+        </div>
+      </div>
+
       <!-- Track header column -->
       <div class="flex shrink-0 flex-col border-r border-white/5 bg-surface-850/60" style="width: 168px">
         <div class="h-7 shrink-0 border-b border-white/10" />
@@ -332,6 +354,17 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
             :track="track"
             :pixels-per-frame="pixelsPerFrame"
           />
+          <!-- On-air highlight: red band from the start up to what's currently on air -->
+          <div
+            v-if="onAirX > 0"
+            class="pointer-events-none absolute inset-y-0 left-0 z-10 border-r-2 border-rose-500 bg-rose-600/20"
+            :style="{ width: `${onAirX}px` }"
+          >
+            <div class="absolute right-0 top-0 flex -translate-x-full items-center gap-1 rounded-bl bg-rose-600 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white shadow-glow-rose">
+              <span class="h-1.5 w-1.5 animate-blink rounded-full bg-white" />
+              On Air
+            </div>
+          </div>
           <TimelineCursor :pixels-per-frame="pixelsPerFrame" :fps="timelineStore.fps" />
           <TimelinePlayhead :frame="timelineStore.playhead" :pixels-per-frame="pixelsPerFrame" @scrub="handleScrub" />
         </div>

@@ -71,16 +71,21 @@ function back(): void {
 
 /** Load a session's segments as a timeline sequence; if it's the live recording, keep ingesting. */
 async function loadToTimeline(session: RecordingSession): Promise<void> {
-  const segs = await fetchSessionSegments(session.folder);
-  if (!segs.length) return;
-  timelineStore.loadSession({
-    folder: session.folder,
-    fps: programStore.fps,
-    nominalSeconds: segmentSeconds.value,
-    segments: segs.map((s) => ({ fileName: s.fileName, url: s.url, thumbnail: s.thumbnailUrl, index: s.index })),
-  });
-  if (session.isActive) ingestStore.startLive(session.folder, segmentSeconds.value);
-  else ingestStore.setLoaded(session.folder);
+  ingestStore.setLoading(session.folder);
+  try {
+    const segs = await fetchSessionSegments(session.folder);
+    if (!segs.length) return;
+    timelineStore.loadSession({
+      folder: session.folder,
+      fps: programStore.fps,
+      nominalSeconds: segmentSeconds.value,
+      segments: segs.map((s) => ({ fileName: s.fileName, url: s.url, thumbnail: s.thumbnailUrl, index: s.index })),
+    });
+    if (session.isActive) ingestStore.startLive(session.folder, segmentSeconds.value);
+    else ingestStore.setLoaded(session.folder);
+  } finally {
+    ingestStore.setLoading(null);
+  }
 }
 
 const filteredSegments = computed(() =>

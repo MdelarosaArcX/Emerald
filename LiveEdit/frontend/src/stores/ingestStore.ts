@@ -11,6 +11,10 @@ interface IngestState {
   loadedFolder: string | null;
   segmentSeconds: number;
   recording: boolean;
+  /** True while a session's segments are being fetched/loaded onto the timeline. */
+  loading: boolean;
+  /** Folder being loaded (shown in the loading indicator). */
+  loadingFolder: string | null;
 }
 
 export const useIngestStore = defineStore('ingest', {
@@ -19,8 +23,14 @@ export const useIngestStore = defineStore('ingest', {
     loadedFolder: null,
     segmentSeconds: 120,
     recording: false,
+    loading: false,
+    loadingFolder: null,
   }),
   actions: {
+    setLoading(folder: string | null): void {
+      this.loading = folder !== null;
+      this.loadingFolder = folder;
+    },
     startLive(folder: string, segmentSeconds: number): void {
       this.liveFolder = folder;
       this.loadedFolder = folder;

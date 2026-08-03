@@ -30,11 +30,77 @@ const programStore = useProgramStore();
 const settingsStore = useSettingsStore();
 const ingestStore = useIngestStore();
 
-// Live ingest: while a live recording session is loaded, poll for newly-recorded segments and
-// append them to the timeline so the editor keeps receiving what the recorder is writing.
+// --- On-air highlight ------------------------------------------------------------------------
+// The red timeline band marks how much of the sequence has gone/is going to air. It's the live
+// capture edge (the recorded length) minus the broadcast delay, advancing in real time. Anchored
+// on load and then ticked so it moves smoothly between the (chunky) segment appends.
+const BROADCAST_DELAY_SECONDS = 7; // matches the header DELAY readout
+let onAirAnchorFrame = 0;
+let onAirAnchorAt = 0;
+function anchorOnAir(): void {
+  const fps = timelineStore.fps || 25;
+  onAirAnchorFrame = Math.max(0, timelineStore.duration - Math.round(BROADCAST_DELAY_SECONDS * fps));
+  onAirAnchorAt = performance.now();
+}
+useIntervalFn(() => {
+  if (!ingestStore.liveFolder || !ingestStore.recording) {
+    if (timelineStore.onAirFrame !== 0) timelineStore.setOnAirFrame(0);
+    return;
+  }
+  const fps = timelineStore.fps || 25;
+  const elapsed = (performance.now() - onAirAnchorAt) / 1000;
+  timelineStore.setOnAirFrame(onAirAnchorFrame + elapsed * fps);
+}, 250);
+
+// Load a recording session as a live-ingesting timeline sequence.
+async function loadLiveSession(folder: string, segmentSeconds: number): Promise<void> {
+  ingestStore.setLoading(folder); // show the "loading clips…" indicator (the fetch can be slow)
+  try {
+    const segs = await fetchSessionSegments(folder);
+    if (!segs.length) return;
+    timelineStore.loadSession({
+      folder,
+      fps: programStore.fps,
+      nominalSeconds: segmentSeconds,
+      segments: segs.map((s) => ({ fileName: s.fileName, url: s.url, thumbnail: s.thumbnailUrl, index: s.index })),
+    });
+    ingestStore.startLive(folder, segmentSeconds);
+    lastAutoFolder = folder;
+    anchorOnAir();
+  } finally {
+    ingestStore.setLoading(null);
+  }
+}
+
+// In Live Edit mode, if a recording is happening it's auto-loaded onto the timeline. Each distinct
+// recording is auto-loaded at most once (lastAutoFolder), so a manual load of a past session isn't
+// repeatedly overridden — but a NEW recording (rotation) does get picked up.
+let lastAutoFolder: string | null = null;
+async function maybeAutoLoadLive(optimistic = false): Promise<void> {
+  if (!settingsStore.liveEditMode || ingestStore.liveFolder) return;
+  // On a user-driven trigger (toggling into Live Edit), show the indicator right away so the wait
+  // for the (sometimes slow) recorder status isn't a silent gap. The 6s poller skips this to avoid
+  // flicker when there's simply no recording.
+  if (optimistic) ingestStore.setLoading('live session');
+  try {
+    const status = await fetchActiveRecording();
+    ingestStore.setRecording(status.isRecording);
+    if (!status.isRecording || !status.folder) return;
+    if (ingestStore.loadedFolder === status.folder || lastAutoFolder === status.folder) return;
+    await loadLiveSession(status.folder, status.segmentSeconds);
+  } finally {
+    if (optimistic && !ingestStore.liveFolder) ingestStore.setLoading(null);
+  }
+}
+
+// Live ingest: auto-load the live recording (in Live Edit mode), then while a live session is loaded
+// poll for newly-recorded segments and append them so the editor keeps receiving what's recorded.
 useIntervalFn(async () => {
   const folder = ingestStore.liveFolder;
-  if (!folder) return;
+  if (!folder) {
+    await maybeAutoLoadLive();
+    return;
+  }
   const [segs, status] = await Promise.all([fetchSessionSegments(folder), fetchActiveRecording()]);
   if (segs.length) {
     timelineStore.appendSessionSegments({
@@ -47,6 +113,11 @@ useIntervalFn(async () => {
   ingestStore.setRecording(status.isRecording);
   if (!status.isRecording || status.folder !== folder) ingestStore.stopLive();
 }, 6000);
+
+// Auto-load the moment Live Edit mode is switched on (don't wait for the next poll tick).
+watch(() => settingsStore.liveEditMode, (on) => {
+  if (on) void maybeAutoLoadLive(true);
+});
 
 // The information/inspector drawer ("Video / Audio FX") is collapsed by default so the timeline
 // spans the full width, matching the broadcast layout. Toggled from the right-panel FX tab or the
@@ -64,6 +135,7 @@ onMounted(async () => {
   timelineStore.subscribeToSocket();
   playbackStore.subscribeToSocket();
   captureStore.subscribeToSocket();
+  void maybeAutoLoadLive(true);
 });
 </script>
 

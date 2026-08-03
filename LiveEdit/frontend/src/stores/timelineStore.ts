@@ -11,6 +11,9 @@ interface TimelineState {
   loading: boolean;
   error: string | null;
   mouseFrame: number | null;
+  /** Frame up to which the timeline has gone/is going to air (0 = nothing on air). Drives the red
+   *  on-air highlight. */
+  onAirFrame: number;
 }
 
 const MIN_ZOOM = 0.25;
@@ -75,6 +78,7 @@ export const useTimelineStore = defineStore('timeline', {
     loading: false,
     error: null,
     mouseFrame: null,
+    onAirFrame: 0,
   }),
 
   getters: {
@@ -139,6 +143,11 @@ export const useTimelineStore = defineStore('timeline', {
       if (emit) {
         getSocket().emit(SOCKET_EVENTS.PLAYHEAD_CHANGED, { playhead: this.timeline.playhead });
       }
+    },
+
+    /** Set the on-air frame (up to which the timeline has gone to air). Non-finite → 0. */
+    setOnAirFrame(frame: number): void {
+      this.onAirFrame = Number.isFinite(frame) && frame > 0 ? frame : 0;
     },
 
     /**
