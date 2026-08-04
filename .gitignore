@@ -8,3 +8,4 @@ frontend/dist/
 artifacts/
 *.run
 *.zip
+backend/data/

@@ -3,10 +3,10 @@
  * All timeline positions are stored internally as frame counts.
  */
 export function useTimecode(fps = 29.97) {
-  const safeFps = Math.max(1, Math.round(fps));
+  const safeFps = Math.max(1, Math.round(Number.isFinite(fps) ? fps : 29.97));
 
   function framesToTimecode(frames: number): string {
-    const totalFrames = Math.max(0, Math.round(frames));
+    const totalFrames = Number.isFinite(frames) ? Math.max(0, Math.round(frames)) : 0;
     const ff = totalFrames % safeFps;
     const totalSeconds = Math.floor(totalFrames / safeFps);
     const ss = totalSeconds % 60;
