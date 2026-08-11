@@ -26,7 +26,7 @@ import { computed, ref } from 'vue';
 const captureStore = useCaptureStore();
 const settingsStore = useSettingsStore();
 const timelineStore = useTimelineStore();
-const { framesToTimecode } = useTimecode(timelineStore.fps);
+const { framesToTimecode } = useTimecode(() => timelineStore.fps);
 const info = computed(() => captureStore.info);
 const timecode = computed(() => framesToTimecode(timelineStore.playhead));
 

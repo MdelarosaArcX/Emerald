@@ -22,7 +22,7 @@ cp .env.example .env
 npm run dev
 ```
 
-Runs on `http://localhost:5001`. Exposes REST endpoints under `/api` and a
+Runs on `http://localhost:4000`. Exposes REST endpoints under `/api` and a
 Socket.IO server for realtime timeline/playback/capture events.
 
 ### Frontend
@@ -33,14 +33,8 @@ npm install
 npm run dev
 ```
 
-Runs on `http://localhost:5174` with `/api`, `/proxies`, `/renders` and
-`/socket.io` proxied to the backend (see `vite.config.ts`). The port and the
-proxy target come from `VITE_DEV_PORT` / `VITE_DEV_BACKEND_URL` in `.env`,
-falling back to 5174/5001. `strictPort` is on, so a collision fails loudly at
-startup rather than silently drifting to another port.
-
-Both ports deliberately sit clear of the main Emerald stack (5173/5000) so the
-two can run side-by-side on one machine.
+Runs on `http://localhost:5173` with `/api` and `/socket.io` proxied to the
+backend (see `vite.config.ts`).
 
 ## Notes
 

@@ -37,37 +37,30 @@ export function fetchOnAirPreviewWhepUrl(): Promise<string | null> {
   return fetchWhepUrl('/api/onair-preview/status');
 }
 
-/** A recorded H.264 clip segment served by the Emerald backend. */
+/**
+ * A recorded segment served by the Emerald backend for one recording session folder. kind is
+ * "mp4" for a finished, playable clip, or "ts" for a raw HLS transport-stream segment from a
+ * still-recording session — those exist purely for LiveEdit's own scrub/timeline playback of the
+ * live tail and are never meant to be listed as a clip (see RecordedClipsBrowser.vue's
+ * kind === 'mp4' filter).
+ */
 export interface RecordedClip {
   fileName: string;
   sessionFolder: string;
+  kind: 'mp4' | 'ts';
   url: string; // absolute (playable in <video>)
-  thumbnailUrl: string; // absolute
+  thumbnailUrl: string | null; // absolute; null for ts segments (no thumbnail is generated for those)
   size: number;
   createdAt: string;
+  // ffprobed off the real file server-side — null for ts (never probed) or for an mp4 segment
+  // still being actively written (ffmpeg hasn't finalized it yet).
+  durationSeconds: number | null;
+  // null for ts (not probed); for mp4, whether the source actually had an embedded audio track
+  // (Emerald's audio map is optional, so a video-only source is a real, if uncommon, case).
+  hasAudio: boolean | null;
 }
 
-/**
- * Lists recorded clips from the Emerald backend (the /api/obs-recordings endpoint on 10.0.0.32),
- * rewriting the backend-relative url/thumbnailUrl into absolute URLs so they load cross-origin
- * from this app. Note: the backend stats a large recordings volume, so this call can take a while.
- */
-export async function fetchRecordedClips(): Promise<RecordedClip[]> {
-  try {
-    const res = await fetch(`${EMERALD_API_BASE}/api/obs-recordings`);
-    if (!res.ok) return [];
-    const list = (await res.json()) as RecordedClip[];
-    return list.map((clip) => ({
-      ...clip,
-      url: `${EMERALD_API_BASE}${clip.url}`,
-      thumbnailUrl: `${EMERALD_API_BASE}${clip.thumbnailUrl}`,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-/** A recording session (one folder of segments written by the Emerald recorder). */
+/** One recording session — a folder of segments written by the Emerald recorder. */
 export interface RecordingSession {
   folder: string;
   createdAt: string;
@@ -76,82 +69,53 @@ export interface RecordingSession {
   isActive: boolean;
 }
 
-/** One segment within a session. */
-export interface RecordedSegment {
-  fileName: string;
-  index: number; // derived from the emerald-NNN.mp4 filename (the API does not send it)
-  url: string; // absolute
-  thumbnailUrl: string; // absolute
-  size: number;
-  createdAt: string;
-  durationSeconds?: number | null; // real segment length reported by the backend, when known
-}
-
-/** List recording sessions (folders), newest first. */
+/** Every recording session Emerald has on disk, newest first — the Video Library's folder grid. */
 export async function fetchRecordingSessions(): Promise<RecordingSession[]> {
   try {
     const res = await fetch(`${EMERALD_API_BASE}/api/recording-sessions`);
     if (!res.ok) return [];
-    const list = (await res.json()) as RecordingSession[];
-    return list.slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const sessions = (await res.json()) as RecordingSession[];
+    return sessions.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   } catch {
     return [];
   }
 }
 
-/** Only browser-relevant video/audio files are ever loaded onto the timeline. */
-const MEDIA_FILE_RE = /\.(mp4|mov|m4v|webm|mkv|wav|aac|mp3|m4a|flac|ogg)$/i;
-
-/** Trailing numeric index of a segment file, e.g. `emerald-007.mp4` → 7. */
-const SEGMENT_INDEX_RE = /-(\d+)\.[A-Za-z0-9]+$/;
+/**
+ * Resolves which recording session folder to fall back to when no folder has been picked:
+ * whichever session Emerald is actively recording into, or the most recently created one.
+ */
+async function fetchActiveOrLatestSessionFolder(): Promise<string | null> {
+  const sessions = await fetchRecordingSessions();
+  return sessions.find((session) => session.isActive)?.folder ?? sessions[0]?.folder ?? null;
+}
 
 /**
- * List a session's video/audio segments in recording order, with absolute URLs.
- * The Emerald backend does NOT send a numeric `index`, so we derive it from the `emerald-NNN.mp4`
- * filename — this is what positions each clip in its own sequential timeline slot. Falling back to
- * an undefined index would place every clip at frame NaN (all stacked at once).
+ * Lists every segment — finished .mp4 clips and, for a still-recording session, the .ts HLS
+ * segments too — for one session folder, rewriting the backend-relative url/thumbnailUrl into
+ * absolute URLs so they load cross-origin from this app.
  */
-export async function fetchSessionSegments(folder: string): Promise<RecordedSegment[]> {
+export async function fetchSessionClips(folder: string): Promise<RecordedClip[]> {
   try {
     const res = await fetch(`${EMERALD_API_BASE}/api/recording-sessions/${encodeURIComponent(folder)}/segments`);
     if (!res.ok) return [];
-    const list = (await res.json()) as Array<Partial<RecordedSegment> & { fileName: string; url: string; thumbnailUrl?: string | null }>;
-    return list
-      .filter((s) => MEDIA_FILE_RE.test(s.fileName))
-      .map((s, i) => {
-        const m = SEGMENT_INDEX_RE.exec(s.fileName);
-        const index = m ? Number(m[1]) : Number.isFinite(s.index) ? (s.index as number) : i;
-        return {
-          fileName: s.fileName,
-          index,
-          size: s.size ?? 0,
-          createdAt: s.createdAt ?? '',
-          durationSeconds: s.durationSeconds ?? null,
-          url: `${EMERALD_API_BASE}${s.url}`,
-          thumbnailUrl: s.thumbnailUrl ? `${EMERALD_API_BASE}${s.thumbnailUrl}` : '',
-        } satisfies RecordedSegment;
-      })
-      .sort((a, b) => a.index - b.index);
+    const list = (await res.json()) as Array<Omit<RecordedClip, 'sessionFolder'>>;
+
+    return list.map((segment) => ({
+      ...segment,
+      sessionFolder: folder,
+      url: `${EMERALD_API_BASE}${segment.url}`,
+      thumbnailUrl: segment.thumbnailUrl ? `${EMERALD_API_BASE}${segment.thumbnailUrl}` : null,
+    }));
   } catch {
     return [];
   }
 }
 
-/** Current recorder status: whether it's recording, the active session folder, and segment length. */
-export async function fetchActiveRecording(): Promise<{ isRecording: boolean; folder: string | null; segmentSeconds: number }> {
-  try {
-    const res = await fetch(`${EMERALD_API_BASE}/api/obs-recording/status`);
-    if (!res.ok) return { isRecording: false, folder: null, segmentSeconds: 120 };
-    const s = (await res.json()) as { isRecording?: boolean; outputPattern?: string | null; segmentSeconds?: number };
-    let folder: string | null = null;
-    if (s.outputPattern) {
-      const m = /[\\/]([^\\/]+)[\\/][^\\/]+$/.exec(s.outputPattern); // folder just before the filename pattern
-      folder = m ? m[1] : null;
-    }
-    return { isRecording: Boolean(s.isRecording), folder, segmentSeconds: s.segmentSeconds || 120 };
-  } catch {
-    return { isRecording: false, folder: null, segmentSeconds: 120 };
-  }
+/** Segments of the active (or most recent) session — used where no folder has been chosen. */
+export async function fetchRecordedClips(): Promise<RecordedClip[]> {
+  const folder = await fetchActiveOrLatestSessionFolder();
+  return folder ? fetchSessionClips(folder) : [];
 }
 
 export interface EmeraldTimecode {

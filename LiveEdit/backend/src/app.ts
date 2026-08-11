@@ -8,6 +8,7 @@ import renderRoutes from './routes/render.routes';
 import statusRoutes from './routes/status.routes';
 import timelineRoutes from './routes/timeline.routes';
 import { logger } from './utils/logger';
+import { LOCAL_RECORDINGS_AVAILABLE, LOCAL_RECORDINGS_PATH } from './utils/localRecordings';
 
 /**
  * Builds and configures the Express application.
@@ -32,6 +33,13 @@ export function createApp(corsOrigin: string): Application {
   // Generated media (browser-playable proxies and rendered sequence outputs).
   app.use('/proxies', express.static(PROXY_DIR));
   app.use('/renders', express.static(RENDER_DIR));
+
+  if (LOCAL_RECORDINGS_AVAILABLE) {
+    app.use('/local-recordings', express.static(LOCAL_RECORDINGS_PATH!));
+    logger.info(`Serving recordings directly from local disk: ${LOCAL_RECORDINGS_PATH}`);
+  } else if (LOCAL_RECORDINGS_PATH) {
+    logger.warn(`EMERALD_RECORDINGS_PATH is set to '${LOCAL_RECORDINGS_PATH}' but that path doesn't exist — falling back to fetching recordings over HTTP.`);
+  }
 
   app.use('/api', projectRoutes);
   app.use('/api', timelineRoutes);

@@ -1,8 +1,11 @@
 <script setup lang="ts">
 /**
- * Live Edit mode left column: a playback preview of the selected clip stacked above the
- * recorded-clips media browser — both shown together (no tabs), resizable. This preview is plain
- * clip playback (NOT the live capture feed); clicking a clip below plays it here.
+ * Live Edit mode left column: a playback preview of the selected clip (plus its Browse Media
+ * details) stacked above the Video Library — both shown together (no tabs), resizable.
+ *
+ * The top pane is ClipPreview, not CapturePreview: in Live Edit the operator is cutting recorded
+ * material, so this column shows the clip being edited rather than the live capture feed. The
+ * live feed still has its own panel in the standard (non-Live-Edit) deck.
  */
 import ClipPreview from '@/components/capture/ClipPreview.vue';
 import ClipBrowser from '@/components/media/ClipBrowser.vue';
@@ -12,12 +15,11 @@ import { Pane, Splitpanes } from 'splitpanes';
 
 <template>
   <Splitpanes horizontal class="h-full">
-    <Pane :size="75" :min-size="50">
+    <Pane :size="63" :min-size="30">
       <ClipPreview />
     </Pane>
-    <!-- Media library kept compact — just the video gallery — so the Browse Media details above
-         get the room. Still draggable/resizable, but capped so it can't crowd the details out. -->
-    <Pane :size="25" :min-size="15" :max-size="40">
+    <!-- Library kept compact but resizable so the Browse Media details above keep their room. -->
+    <Pane :size="37" :min-size="22">
       <ClipBrowser />
     </Pane>
   </Splitpanes>

@@ -9,8 +9,9 @@
 import AudioMeter from '@/components/monitor/AudioMeter.vue';
 import TransportControls from '@/components/monitor/TransportControls.vue';
 import { requestProxy } from '@/services/render';
+import { useTimecode } from '@/composables/useTimecode';
 import { useTimelineStore } from '@/stores/timelineStore';
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue';
 
 const timelineStore = useTimelineStore();
 
@@ -19,21 +20,20 @@ const videoRef = ref<HTMLVideoElement | null>(null);
 const volume = ref(100);
 const speed = ref(1);
 const speedOptions = [0.25, 0.5, 1, 1.5, 2];
-const isPlaying = ref(false);
+// Lives on the timeline store (not a local ref) so TimelineEditor can gate its playhead-follow
+// auto-scroll on the same "is playback actually advancing the playhead" signal.
+const isPlaying = computed(() => timelineStore.isPlaying);
 
 const proxyUrl = ref('');
 const proxyLoading = ref(false);
 
 const fps = computed(() => timelineStore.fps || 25);
 
-const timecode = computed(() => {
-  const f = Math.max(1, Math.round(fps.value));
-  const total = Math.max(0, Math.round(timelineStore.playhead));
-  const ff = total % f;
-  const secs = Math.floor(total / f);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(Math.floor(secs / 3600))}:${pad(Math.floor(secs / 60) % 60)}:${pad(secs % 60)}:${pad(ff)}`;
-});
+// Shared helper rather than a local copy of the same arithmetic: this readout is the same
+// local-time-of-day HH:MM:SS:FF the ruler and status bar show, and the duplicate here was missing
+// their 24h wrap, so a session running through midnight read 24:xx:xx here and 00:xx:xx there.
+const { framesToTimecode } = useTimecode(() => fps.value);
+const timecode = computed(() => framesToTimecode(timelineStore.playhead));
 
 /** Active video clip under the playhead (topmost visible non-audio track). */
 const active = computed(() => {
@@ -74,63 +74,40 @@ const activeMuted = computed(() => {
 });
 const meterLevel = computed(() => (isPlaying.value && !activeMuted.value ? volume.value : 0));
 
-// --- Playback source -------------------------------------------------------------------------
-// The <video> plays a lightweight, browser-friendly PROXY (480p faststart) of the active clip —
-// the raw Emerald segments are large, non-faststart 4K files that stall the browser. While a proxy
-// is still transcoding, the clip thumbnail is shown and a synthetic clock keeps the playhead
-// sweeping; playback hands off to the real video the moment its proxy is ready.
+// --- Proxy: request a playable version whenever the active clip's source changes ---
+// Recorded segments straight from the Emerald backend (both the regular recording pipeline's
+// stream-copied .mp4 and the edit-capture pipeline's own proxy) are already real, browser-playable
+// H.264 MP4 — re-encoding them through ensureProxy() would just transcode a second time for no
+// benefit. Only genuinely non-browser-playable sources (e.g. a ProRes MOV master, if one's ever
+// wired up here) still need it.
+function isAlreadyPlayableMp4(src: string): boolean {
+  return /\.mp4(\?|#|$)/i.test(src);
+}
+
 let proxyToken = 0;
-const proxyCache = new Map<string, string>(); // source URL → proxy URL (avoid re-requesting)
-
-async function ensureProxy(src: string): Promise<string> {
-  if (!/^https?:/i.test(src)) return '';
-  const cached = proxyCache.get(src);
-  if (cached) return cached;
-  const url = (await requestProxy(src)) ?? '';
-  if (url) proxyCache.set(src, url);
-  return url;
-}
-
-const PREFETCH_AHEAD = 3;
-/** Source paths of the next few clips after the active one, in order (for prefetching proxies). */
-function upcomingSources(): string[] {
-  const a = active.value;
-  if (!a) return [];
-  return a.track.clips
-    .filter((c) => c.start > a.clip.start && /^https?:/i.test(c.path))
-    .sort((x, y) => x.start - y.start)
-    .slice(0, PREFETCH_AHEAD)
-    .map((c) => c.path);
-}
-/** Warm the next few clips' proxies so boundary crossings play without a transcode gap. */
-function prefetchAhead(): void {
-  for (const src of upcomingSources()) void ensureProxy(src);
-}
-
 watch(
   activeSource,
   async (src) => {
     proxyUrl.value = '';
+    stopRaf();
     if (!/^https?:/i.test(src)) {
       proxyLoading.value = false;
       return;
     }
+    if (isAlreadyPlayableMp4(src)) {
+      proxyLoading.value = false;
+      proxyUrl.value = src;
+      return;
+    }
     const token = ++proxyToken;
     proxyLoading.value = true;
-    prefetchAhead(); // start warming upcoming clips immediately, in parallel with this one
-    const url = await ensureProxy(src);
+    const url = await requestProxy(src);
     if (token !== proxyToken) return; // superseded by a newer active clip
     proxyLoading.value = false;
-    proxyUrl.value = url;
-    prefetchAhead();
+    proxyUrl.value = url ?? '';
   },
   { immediate: true },
 );
-
-// A proxy is available once we have its URL. Note this is a *relative* path (e.g. "/proxies/x.mp4")
-// served by our own dev server / backend — do NOT test it against /^https?:/ (that check was the bug
-// that kept the <video> hidden and left only the thumbnail showing).
-const hasVideo = computed(() => proxyUrl.value.length > 0);
 
 watch(proxyUrl, (url) => {
   const v = videoRef.value;
@@ -138,7 +115,6 @@ watch(proxyUrl, (url) => {
   if (url) {
     v.src = url;
     v.muted = activeMuted.value;
-    v.playbackRate = speed.value;
     v.load();
   } else {
     v.removeAttribute('src');
@@ -154,50 +130,35 @@ function sourceSecondsAt(frame: number): number {
   if (!a) return 0;
   return Math.max(0, (frame - a.clip.start + (a.clip.trimIn ?? 0)) / fps.value);
 }
-
-/**
- * Start the video, surviving the browser's autoplay policy: if a play with audio is rejected
- * (proxy finished after the click, so no fresh user gesture), retry muted, then restore audio.
- */
-function playVideo(v: HTMLVideoElement): void {
-  const p = v.play();
-  if (p && typeof p.catch === 'function') {
-    p.catch(() => {
-      v.muted = true;
-      v.play()
-        .then(() => {
-          v.muted = activeMuted.value;
-        })
-        .catch(() => {});
-    });
-  }
+function seekToPlayhead(): void {
+  const v = videoRef.value;
+  if (!v || !proxyUrl.value) return;
+  const t = sourceSecondsAt(timelineStore.playhead);
+  if (Number.isFinite(t) && Math.abs(v.currentTime - t) > 0.15) v.currentTime = t;
 }
-
 function onLoadedData(): void {
   const v = videoRef.value;
   if (!v) return;
   v.playbackRate = speed.value;
-  // Fit the (placeholder-length) clip to the real source duration so the slot reflects the actual
-  // segment length (capped at the next clip so lanes never overlap).
-  const a = active.value;
-  if (a && a.clip.autoFit && Number.isFinite(v.duration) && v.duration > 0) {
-    timelineStore.fitClipToSource(a.clip.id, Math.round(v.duration * fps.value));
-  }
-  v.currentTime = sourceSecondsAt(timelineStore.playhead);
-  if (isPlaying.value) playVideo(v); // hand off from the synthetic clock to real video
+  seekToPlayhead();
+  if (isPlaying.value) v.play().catch(() => {});
 }
 
-// --- Playhead: video-driven while a proxy plays, synthetic while one transcodes ---------------
-// The real <video> is the clock when present (the rAF loop reads its currentTime each frame so the
-// playhead tracks decoded video 1:1 — smooth, no seek-thrash), so the whole segment plays through.
-// When there is no proxy yet the loop advances the playhead itself so it still sweeps over the
-// thumbnail. onVideoEnded is a safety net for the clip→clip boundary.
-function onVideoEnded(): void {
-  if (isPlaying.value) advanceToNextClip();
+// video → timeline while playing (guarded so the playhead watcher below won't seek back)
+function onTimeUpdate(): void {
+  const v = videoRef.value;
+  const a = active.value;
+  if (!v || !a || !isPlaying.value || !proxyUrl.value) return;
+  const c = a.clip;
+  const frame = Math.round(c.start + v.currentTime * fps.value - (c.trimIn ?? 0));
+  if (frame >= c.start + c.duration - 1) {
+    advanceToNextClip();
+    return;
+  }
+  timelineStore.setPlayhead(Math.max(c.start, frame), false);
 }
-// If a proxy fails to load/decode, don't freeze the sequence — skip past this clip while playing.
-function onVideoError(): void {
-  if (isPlaying.value) advanceToNextClip();
+function onVideoEnded(): void {
+  advanceToNextClip();
 }
 function advanceToNextClip(): void {
   const a = active.value;
@@ -212,85 +173,69 @@ function advanceToNextClip(): void {
     return;
   }
   timelineStore.setPlayhead(next, false); // active changes → next proxy loads and auto-plays
-  pos = next;
 }
 
-// External scrub (ruler click / step / jump): move the video to the playhead when paused.
+// timeline → video on external scrub
 watch(
   () => timelineStore.playhead,
   (frame) => {
     const v = videoRef.value;
-    if (!v || !hasVideo.value || isPlaying.value) return;
-    const want = sourceSecondsAt(frame);
-    if (Number.isFinite(want) && Math.abs(v.currentTime - want) > 0.2) v.currentTime = want;
+    const a = active.value;
+    if (!v || !a || !proxyUrl.value) return;
+    const videoFrame = Math.round(a.clip.start + v.currentTime * fps.value - (a.clip.trimIn ?? 0));
+    if (Math.abs(videoFrame - frame) <= 1) return; // originated from the video
+    v.currentTime = sourceSecondsAt(frame);
   },
 );
 
+// --- Fallback playback loop (thumbnail-only clips / while a proxy generates) ---
 let rafId = 0;
 let lastTs = 0;
 let pos = 0;
-function loop(ts: number): void {
-  if (!isPlaying.value) {
-    rafId = 0;
+function rafLoop(ts: number): void {
+  if (!isPlaying.value || proxyUrl.value) {
+    stopRaf();
     return;
   }
   if (!lastTs) lastTs = ts;
-  const dt = (ts - lastTs) / 1000;
+  pos += ((ts - lastTs) / 1000) * fps.value * speed.value;
   lastTs = ts;
-  const v = videoRef.value;
-  const a = active.value;
-  if (hasVideo.value && v && a) {
-    // A proxy is loaded: the video is the clock. Keep it playing (recover from autoplay blocks or
-    // brief stalls) and read its decoded position each frame. Never advance the playhead past the
-    // video, so "video playing" and "playhead moving" stay one and the same.
-    if (v.paused && v.readyState >= 2) playVideo(v);
-    if (v.readyState >= 1) {
-      const c = a.clip;
-      const frame = Math.round(c.start + v.currentTime * fps.value - (c.trimIn ?? 0));
-      if (frame >= c.start + c.duration - 1) {
-        advanceToNextClip();
-      } else {
-        timelineStore.setPlayhead(Math.max(c.start, frame), false);
-        pos = timelineStore.playhead;
-      }
-    }
-    // readyState < 1 → still loading this clip; wait (the poster/thumbnail shows meanwhile).
-  } else {
-    // No proxy yet — advance the playhead ourselves so it keeps sweeping over the thumbnail.
-    pos += dt * fps.value * speed.value;
-    if (pos >= timelineStore.duration) {
-      timelineStore.setPlayhead(timelineStore.duration, false);
-      pause();
-      return;
-    }
-    timelineStore.setPlayhead(Math.round(pos), false);
+  if (pos >= timelineStore.duration) {
+    timelineStore.setPlayhead(timelineStore.duration, false);
+    pause();
+    return;
   }
-  rafId = requestAnimationFrame(loop);
+  timelineStore.setPlayhead(Math.round(pos), false);
+  rafId = requestAnimationFrame(rafLoop);
+}
+function startRaf(): void {
+  pos = timelineStore.playhead >= timelineStore.duration ? 0 : timelineStore.playhead;
+  lastTs = 0;
+  rafId = requestAnimationFrame(rafLoop);
+}
+function stopRaf(): void {
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = 0;
 }
 
 function play(): void {
   if (timelineStore.duration <= 0) return;
-  // For a live broadcast, start playback at what's currently on air (the red on-air point) so the
-  // monitor follows the live feed. Otherwise resume from the playhead (rewinding if it's at the end).
-  if (timelineStore.onAirFrame > 0) {
-    timelineStore.setPlayhead(Math.min(timelineStore.onAirFrame, timelineStore.duration), false);
-  } else if (timelineStore.playhead >= timelineStore.duration) {
-    timelineStore.setPlayhead(0, false);
+  // Frame 0 is midnight (see timelineStore.appendCaptureSegment) — a playhead left at 0, or
+  // anywhere before the first clip, sits in a real-time gap that could be hours long. Jump to the
+  // first clip instead of starting playback somewhere with nothing to show. Only when the
+  // playhead is actually before all content — scrubbing into the middle of the timeline and
+  // hitting play still resumes from exactly there, same as before.
+  const earliestFrame = timelineStore.earliestClipFrame;
+  if (earliestFrame != null && timelineStore.playhead < earliestFrame) {
+    timelineStore.setPlayhead(earliestFrame, false);
   }
-  isPlaying.value = true;
-  pos = timelineStore.playhead;
-  lastTs = 0;
-  const v = videoRef.value;
-  if (v && hasVideo.value) {
-    v.currentTime = sourceSecondsAt(timelineStore.playhead);
-    playVideo(v); // user gesture → authorized
-  }
-  if (!rafId) rafId = requestAnimationFrame(loop);
+  timelineStore.setPlaying(true);
+  if (proxyUrl.value && videoRef.value) videoRef.value.play().catch(() => {});
+  else startRaf();
 }
 function pause(): void {
-  isPlaying.value = false;
-  if (rafId) cancelAnimationFrame(rafId);
-  rafId = 0;
+  timelineStore.setPlaying(false);
+  stopRaf();
   videoRef.value?.pause();
 }
 function stop(): void {
@@ -317,6 +262,46 @@ function setSpeed(value: number): void {
   if (videoRef.value) videoRef.value.playbackRate = value;
 }
 
+// --- Transport keyboard shortcuts --------------------------------------------------------------
+// Space toggles play/pause, Right/Left step a single frame on the timeline.
+//
+// Bound on window rather than on the timeline element so they work wherever focus happens to be —
+// transport keys shouldn't depend on having clicked the right panel first. They live in this
+// component because it owns play/pause/stepFrame and the <video> they drive; TimelineEditor keeps
+// its own editing keys (X to cut, Delete to remove) on a separate listener, and the two sets don't
+// overlap.
+//
+// Each of these keys already means something to the browser: Space scrolls the page and re-triggers
+// the last-clicked button (so clicking Play with the mouse and then pressing Space would otherwise
+// toggle twice), and the arrows scroll too — hence preventDefault on every key actually handled.
+function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return (
+    !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+  );
+}
+
+function onTransportKeydown(event: KeyboardEvent): void {
+  // Leave the browser's own chords (Ctrl/Cmd/Alt + key) alone.
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  if (isTypingTarget(event.target)) return;
+
+  if (event.key === ' ' || event.key === 'Spacebar') {
+    event.preventDefault();
+    if (isPlaying.value) pause();
+    else play();
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault();
+    stepFrame(1);
+  } else if (event.key === 'ArrowLeft') {
+    event.preventDefault();
+    stepFrame(-1);
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onTransportKeydown));
+onUnmounted(() => window.removeEventListener('keydown', onTransportKeydown));
+
 onBeforeUnmount(pause);
 </script>
 
@@ -340,24 +325,23 @@ onBeforeUnmount(pause);
       </div>
 
       <div ref="frameRef" class="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-black">
-        <!-- Thumbnail frame (shown only when there is no playable video source) -->
+        <!-- Thumbnail frame (shown when no proxy is playing yet) -->
         <div
           v-if="active && active.clip.thumbnail"
-          v-show="!hasVideo"
+          v-show="!proxyUrl"
           class="absolute inset-0 bg-contain bg-center bg-no-repeat"
           :style="{ ...previewStyle, backgroundImage: `url(${active.clip.thumbnail})` }"
         />
-        <!-- Real video: original segment by default, upgraded to the proxy when ready -->
+        <!-- Real proxy video -->
         <video
-          v-show="active && hasVideo"
+          v-show="active && proxyUrl"
           ref="videoRef"
           class="absolute inset-0 h-full w-full object-contain"
           :style="previewStyle"
-          :poster="active?.clip.thumbnail"
           playsinline
           @loadeddata="onLoadedData"
+          @timeupdate="onTimeUpdate"
           @ended="onVideoEnded"
-          @error="onVideoError"
         />
 
         <div v-if="!active" class="pointer-events-none absolute inset-0 flex items-center justify-center bg-grid-fade px-6 text-center text-xs text-slate-600">
@@ -372,7 +356,7 @@ onBeforeUnmount(pause);
           <span v-if="(active.clip.opacity ?? 100) < 100" class="rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-slate-200 backdrop-blur">Opacity {{ active.clip.opacity }}%</span>
           <span v-if="activeMuted" class="rounded bg-rose-500/25 px-1.5 py-0.5 text-[9px] font-medium text-rose-300 backdrop-blur">MUTED</span>
         </div>
-        <div v-if="proxyLoading && !hasVideo" class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-slate-200 backdrop-blur">
+        <div v-if="proxyLoading" class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-slate-200 backdrop-blur">
           Preparing preview…
         </div>
       </div>

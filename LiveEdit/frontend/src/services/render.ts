@@ -1,7 +1,7 @@
 /**
  * Talks to the LiveEdit backend's media pipeline: proxy generation (browser-playable, lightweight
  * versions of the non-faststart recorded segments) and sequence rendering (trim + concat).
- * Routed through Vite's /api, /proxies, /renders proxies to the backend on :5001.
+ * Routed through Vite's /api, /proxies, /renders proxies to the backend on :4000.
  */
 
 /** Ask the backend for a browser-playable proxy of a recorded segment. Returns a relative URL. */

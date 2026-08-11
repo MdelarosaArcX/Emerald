@@ -15,7 +15,7 @@ export const usePlaybackStore = defineStore('playback', {
       clipId: null,
       filePath: '',
       duration: 0,
-      fps: 29.97,
+      fps: 25,
       resolution: '-',
       codec: '-',
       audioChannels: 2,

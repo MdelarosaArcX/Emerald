@@ -22,7 +22,12 @@ const { DeltacastTxService } = require("./services/deltacastTxService");
 const { TimecodeLogService } = require("./services/timecodeLogService");
 const { logEvent, readRecentEvents } = require("./services/eventLogService");
 const { formatWallClockTimecode } = require("./services/timecodeFormat");
-const { probeSegment } = require("./services/segmentProbeService");
+const { probeSegment, mapWithConcurrency } = require("./services/segmentProbeService");
+
+// Ceiling on concurrent ffprobe child processes per segment-listing request. A long session
+// folder holds tens of thousands of segments, and fanning out one process per segment starved the
+// event loop to the point that the whole HTTP API stopped answering.
+const SEGMENT_PROBE_CONCURRENCY = 8;
 const db = require("./db");
 
 const contentRoot = __dirname;
@@ -337,7 +342,7 @@ function registerRoutes(server) {
       })
       .filter(Boolean);
 
-    const segments = await Promise.all(matches.map(async ({ fileName, kind }) => {
+    const segments = await mapWithConcurrency(matches, SEGMENT_PROBE_CONCURRENCY, async ({ fileName, kind }) => {
       const filePath = path.join(sessionDir, fileName);
       const stat = await fs.promises.stat(filePath);
 
@@ -362,7 +367,7 @@ function registerRoutes(server) {
         durationSeconds: probed?.durationSeconds ?? null,
         hasAudio: kind === "mp4" ? Boolean(probed?.audioCodec) : null,
       };
-    }));
+    });
 
     // mp4 and ts segment indices are independent counters (different segment durations), so
     // ordering the merged list by actual file creation time is the only ordering that's
@@ -409,13 +414,16 @@ function registerRoutes(server) {
     }
 
     const files = await fs.promises.readdir(sessionDir);
-    const segments = await Promise.all(files
+    const masters = files
       .map((fileName) => {
         const match = EDIT_CAPTURE_MASTER_PATTERN.exec(fileName);
         return match ? { fileName, index: Number(match[1]) } : null;
       })
-      .filter(Boolean)
-      .map(async ({ fileName, index }) => {
+      .filter(Boolean);
+    // Same bounded fan-out as the recording-session listing above — an edit-capture session
+    // accumulates segments just as fast, so this endpoint had the identical spawn-storm problem.
+    const segments = await mapWithConcurrency(masters, SEGMENT_PROBE_CONCURRENCY,
+      async ({ fileName, index }) => {
         const stat = await fs.promises.stat(path.join(sessionDir, fileName));
         const proxyFileName = fileName.replace(EDIT_CAPTURE_MASTER_PATTERN, "editcapture-proxy-$1.mp4");
         const proxyPath = path.join(sessionDir, proxyFileName);
@@ -440,7 +448,7 @@ function registerRoutes(server) {
           durationSeconds: probed?.durationSeconds ?? null,
           hasAudio: proxyStat ? Boolean(probed?.audioCodec) : null,
         };
-      }));
+      });
 
     return segments.sort((a, b) => a.index - b.index);
   });

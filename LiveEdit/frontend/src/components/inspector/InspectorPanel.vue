@@ -13,7 +13,7 @@ import { computed } from 'vue';
 
 const timelineStore = useTimelineStore();
 const programStore = useProgramStore();
-const { framesToTimecode } = useTimecode(programStore.fps);
+const { framesToTimecode } = useTimecode(() => programStore.fps);
 
 const clip = computed(() => timelineStore.selectedClip);
 const program = computed(() => programStore.clip);

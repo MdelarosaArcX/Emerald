@@ -16,7 +16,7 @@ const emit = defineEmits<{
   scrub: [frames: number];
 }>();
 
-const { framesToTimecode } = useTimecode(props.fps);
+const { framesToTimecode } = useTimecode(() => props.fps);
 
 const secondWidth = computed(() => props.pixelsPerFrame * props.fps);
 const secondStep = computed(() => {

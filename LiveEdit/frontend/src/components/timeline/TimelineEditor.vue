@@ -9,19 +9,16 @@ import TimelinePlayhead from '@/components/timeline/TimelinePlayhead.vue';
 import TimelineRuler from '@/components/timeline/TimelineRuler.vue';
 import TimelineTrack from '@/components/timeline/TimelineTrack.vue';
 import { renderSequence } from '@/services/render';
-import { useIngestStore } from '@/stores/ingestStore';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useTimecode } from '@/composables/useTimecode';
 import {
   AdjustmentsHorizontalIcon,
   ArrowDownTrayIcon,
-  ArrowPathIcon,
   Bars3Icon,
   EyeIcon,
   EyeSlashIcon,
   LockClosedIcon,
   LockOpenIcon,
-  FolderIcon,
   MagnifyingGlassMinusIcon,
   MagnifyingGlassPlusIcon,
   PlusIcon,
@@ -31,7 +28,7 @@ import {
   TrashIcon,
   XMarkIcon,
 } from '@heroicons/vue/24/outline';
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import draggable from 'vuedraggable';
 import type { Track } from '@/types/clip';
 
@@ -39,8 +36,7 @@ defineProps<{ inspectorOpen?: boolean }>();
 const emit = defineEmits<{ toggleInspector: [] }>();
 
 const timelineStore = useTimelineStore();
-const ingestStore = useIngestStore();
-const { framesToTimecode } = useTimecode(timelineStore.fps);
+const { framesToTimecode } = useTimecode(() => timelineStore.fps);
 const playheadTimecode = computed(() => framesToTimecode(timelineStore.playhead));
 const hasSelection = computed(() => timelineStore.selectedClip !== null);
 
@@ -110,8 +106,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 const BASE_PX_PER_FRAME = 3;
 const pixelsPerFrame = computed(() => BASE_PX_PER_FRAME * timelineStore.zoom);
 const contentWidth = computed(() => timelineStore.duration * pixelsPerFrame.value);
-// Pixel width of the red on-air band (clamped to the recorded/rendered length).
-const onAirX = computed(() => Math.min(timelineStore.onAirFrame, timelineStore.duration) * pixelsPerFrame.value);
 
 /** Drag-to-reorder track list; committing a new order writes back to the store. */
 const trackList = computed<Track[]>({
@@ -121,17 +115,34 @@ const trackList = computed<Track[]>({
 
 const scrollRef = ref<HTMLElement | null>(null);
 
-// Follow the playhead: keep it pinned ~30% from the left edge and let the timeline scroll smoothly
-// underneath as it plays. Because the playhead updates every animation frame during playback, this
-// assignment tracks it smoothly. Before it reaches the 30% mark it simply moves out from the left.
-const PLAYHEAD_ANCHOR = 0.3;
+// While playing, keep the playhead pinned near the left edge of the visible viewport so the
+// timeline visibly scrolls right-to-left underneath it instead of requiring a manual scroll to
+// follow along. Left untouched while paused so manual scrubbing/panning is never fought.
+const FOLLOW_MARGIN_PX = 80;
 watch(
   () => timelineStore.playhead,
   (frame) => {
+    if (!timelineStore.isPlaying) return;
     const el = scrollRef.value;
     if (!el) return;
-    const x = frame * pixelsPerFrame.value;
-    el.scrollLeft = Math.max(0, x - el.clientWidth * PLAYHEAD_ANCHOR);
+    el.scrollLeft = Math.max(0, frame * pixelsPerFrame.value - FOLLOW_MARGIN_PX);
+  },
+);
+
+// Jumps the viewport to a just-landed live-captured segment on V4 (see timelineStore's
+// pendingScrollFrame doc comment) — frame 0 is midnight, so without this the operator would have
+// to manually scroll from 0 all the way to wherever "now" is (e.g. 21:52:00) every time.
+watch(
+  () => timelineStore.pendingScrollFrame,
+  async (frame) => {
+    if (frame == null) return;
+    // The new clip just widened timeline.duration (hence contentWidth) — wait for that to
+    // actually reach the DOM, otherwise the browser clamps scrollLeft to the still-old, narrower
+    // scrollWidth instead of the position we're about to set.
+    await nextTick();
+    const el = scrollRef.value;
+    if (el) el.scrollLeft = Math.max(0, frame * pixelsPerFrame.value - FOLLOW_MARGIN_PX);
+    timelineStore.pendingScrollFrame = null;
   },
 );
 
@@ -174,25 +185,6 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
           {{ playheadTimecode }}
         </span>
         <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Timeline</h2>
-        <span
-          v-if="ingestStore.loading"
-          class="flex items-center gap-1.5 rounded-md border border-teal-400/40 bg-teal-400/10 px-2 py-1 font-mono text-[10px] text-teal-300"
-        >
-          <ArrowPathIcon class="h-3 w-3 animate-spin" />
-          Loading clips…
-          <span v-if="ingestStore.loadingFolder" class="max-w-[130px] truncate text-teal-200/70">{{ ingestStore.loadingFolder }}</span>
-        </span>
-        <span
-          v-else-if="ingestStore.loadedFolder"
-          class="flex items-center gap-1.5 rounded-md border border-white/5 bg-surface-800 px-2 py-1 font-mono text-[10px] text-slate-300"
-          :title="`Loaded session: ${ingestStore.loadedFolder}`"
-        >
-          <FolderIcon class="h-3 w-3 text-emerald-400" />
-          <span class="max-w-[160px] truncate">{{ ingestStore.loadedFolder }}</span>
-          <span v-if="ingestStore.liveFolder" class="flex items-center gap-1 rounded-full bg-rose-500/20 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-rose-300">
-            <span class="h-1.5 w-1.5 animate-blink rounded-full bg-rose-500" /> Live
-          </span>
-        </span>
       </div>
       <div class="flex items-center gap-2">
         <button
@@ -260,18 +252,7 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
       </div>
     </header>
 
-    <div class="relative flex min-h-0 flex-1 overflow-y-auto">
-      <!-- Loading overlay while a session's clips are being fetched/loaded onto the timeline -->
-      <div
-        v-if="ingestStore.loading"
-        class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-surface-900/55 backdrop-blur-[1px]"
-      >
-        <div class="flex items-center gap-2.5 rounded-lg border border-teal-400/30 bg-surface-850/90 px-4 py-2.5 shadow-panel">
-          <ArrowPathIcon class="h-4 w-4 animate-spin text-teal-300" />
-          <span class="text-xs font-medium text-slate-200">Loading clips onto the timeline…</span>
-        </div>
-      </div>
-
+    <div class="flex min-h-0 flex-1 overflow-y-auto">
       <!-- Track header column -->
       <div class="flex shrink-0 flex-col border-r border-white/5 bg-surface-850/60" style="width: 168px">
         <div class="h-7 shrink-0 border-b border-white/10" />
@@ -354,17 +335,6 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
             :track="track"
             :pixels-per-frame="pixelsPerFrame"
           />
-          <!-- On-air highlight: red band from the start up to what's currently on air -->
-          <div
-            v-if="onAirX > 0"
-            class="pointer-events-none absolute inset-y-0 left-0 z-10 border-r-2 border-rose-500 bg-rose-600/20"
-            :style="{ width: `${onAirX}px` }"
-          >
-            <div class="absolute right-0 top-0 flex -translate-x-full items-center gap-1 rounded-bl bg-rose-600 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white shadow-glow-rose">
-              <span class="h-1.5 w-1.5 animate-blink rounded-full bg-white" />
-              On Air
-            </div>
-          </div>
           <TimelineCursor :pixels-per-frame="pixelsPerFrame" :fps="timelineStore.fps" />
           <TimelinePlayhead :frame="timelineStore.playhead" :pixels-per-frame="pixelsPerFrame" @scrub="handleScrub" />
         </div>

@@ -34,9 +34,6 @@ export interface Clip {
   locked?: boolean;
   thumbnail?: string;
   waveform?: number[];
-  /** When true, the clip's length is a placeholder and should be fitted to the real source
-   * duration once it's known (from the proxy video's metadata). Cleared once fitted or edited. */
-  autoFit?: boolean;
 }
 
 /** A timeline track (video, audio, or fx lane). */

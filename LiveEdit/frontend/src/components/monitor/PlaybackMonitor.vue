@@ -26,7 +26,7 @@ const emit = defineEmits<{ toggleInspector: [] }>();
 
 const playbackStore = usePlaybackStore();
 const timelineStore = useTimelineStore();
-const { framesToTimecode } = useTimecode(timelineStore.fps);
+const { framesToTimecode } = useTimecode(() => timelineStore.fps);
 const info = computed(() => playbackStore.info);
 const timecode = computed(() => framesToTimecode(timelineStore.playhead));
 

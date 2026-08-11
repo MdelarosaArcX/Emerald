@@ -40,6 +40,9 @@ const tabs: { id: LeftTab; label: string }[] = [
     </div>
 
     <CapturePreview v-show="activeTab === 'capture'" />
+    <!-- gallery: this tab owns the full panel height, so it opens on the Video Library folder
+         grid and drills into a session from there. Live Edit's stacked column keeps the flat
+         layout — it only gets a fraction of the height once the clip preview takes its share. -->
     <ClipBrowser v-if="activeTab === 'media'" gallery />
   </div>
 </template>

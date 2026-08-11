@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { Clip, Timeline, Track } from '../types/clip';
+import { Timeline, Track } from '../types/clip';
 import { CaptureInfo, MediaAsset, PlaybackInfo, Project, SystemStatus } from '../types/project';
 
 /**
@@ -9,23 +9,14 @@ import { CaptureInfo, MediaAsset, PlaybackInfo, Project, SystemStatus } from '..
 
 const now = new Date().toISOString();
 
-function makeClip(partial: Partial<Clip> & Pick<Clip, 'id' | 'name' | 'track' | 'start' | 'duration' | 'color' | 'type'>): Clip {
-  return {
-    path: `/media/${partial.name.toLowerCase().replace(/\s+/g, '-')}.mp4`,
-    trimIn: 0,
-    trimOut: partial.duration,
-    effects: [],
-    opacity: 100,
-    rotation: 0,
-    scale: 100,
-    position: { x: 0, y: 0 },
-    speed: 1,
-    volume: 100,
-    locked: false,
-    ...partial,
-  };
-}
-
+// Empty by design: these used to ship with placeholder demo clips (a "Sponsor Bug" title clip on
+// V2 spanning frames 0-900, full-length "Commentary Mix"/"Stadium Ambience" audio, etc.). Because
+// ProgramMonitor.vue's `active` computed walks tracks in stacking order and returns the *first*
+// one with a clip under the playhead, those higher (lower-order) placeholder tracks silently
+// shadowed whatever a real clip a user actually dropped onto V1 — the timeline looked like it had
+// a clip, but the monitor kept previewing the fake placeholder underneath it (whose fake
+// `/media/*` path isn't a real URL either, so it never even requested a proxy). Track structure
+// stays the same; only the seed clips are gone.
 const videoTracks: Track[] = [
   {
     id: 'v4', name: 'V4', kind: 'video', order: 0, height: 64, locked: false, visible: true, muted: false, solo: false,
@@ -33,45 +24,30 @@ const videoTracks: Track[] = [
   },
   {
     id: 'v3', name: 'V3', kind: 'video', order: 1, height: 64, locked: false, visible: true, muted: false, solo: false,
-    clips: [
-      makeClip({ id: uuid(), name: 'Lower Third - Score', track: 'v3', start: 320, duration: 180, color: '#22d3ee', type: 'title' }),
-    ],
+    clips: [],
   },
   {
     id: 'v2', name: 'V2', kind: 'video', order: 2, height: 64, locked: false, visible: true, muted: false, solo: false,
-    clips: [
-      makeClip({ id: uuid(), name: 'Sponsor Bug', track: 'v2', start: 0, duration: 900, color: '#10b981', type: 'title' }),
-    ],
+    clips: [],
   },
   {
     id: 'v1', name: 'V1', kind: 'video', order: 3, height: 80, locked: false, visible: true, muted: false, solo: false,
-    clips: [
-      makeClip({ id: uuid(), name: 'Cam 1 - Wide', track: 'v1', start: 0, duration: 260, color: '#14b8a6', type: 'video' }),
-      makeClip({ id: uuid(), name: 'Cam 2 - Close', track: 'v1', start: 260, duration: 220, color: '#0ea5e9', type: 'video' }),
-      makeClip({ id: uuid(), name: 'Replay - Goal', track: 'v1', start: 480, duration: 140, color: '#f59e0b', type: 'video' }),
-      makeClip({ id: uuid(), name: 'Cam 1 - Wide', track: 'v1', start: 620, duration: 380, color: '#14b8a6', type: 'video' }),
-    ],
+    clips: [],
   },
   {
     id: 'fx', name: 'FX', kind: 'fx', order: 4, height: 48, locked: false, visible: true, muted: false, solo: false,
-    clips: [
-      makeClip({ id: uuid(), name: 'Cross Dissolve', track: 'fx', start: 250, duration: 20, color: '#a855f7', type: 'fx' }),
-    ],
+    clips: [],
   },
 ];
 
 const audioTracks: Track[] = [
   {
     id: 'a1', name: 'A1', kind: 'audio', order: 5, height: 56, locked: false, visible: true, muted: false, solo: false,
-    clips: [
-      makeClip({ id: uuid(), name: 'Commentary Mix', track: 'a1', start: 0, duration: 1000, color: '#34d399', type: 'audio' }),
-    ],
+    clips: [],
   },
   {
     id: 'a2', name: 'A2', kind: 'audio', order: 6, height: 56, locked: false, visible: true, muted: false, solo: false,
-    clips: [
-      makeClip({ id: uuid(), name: 'Stadium Ambience', track: 'a2', start: 0, duration: 1000, color: '#2dd4bf', type: 'audio' }),
-    ],
+    clips: [],
   },
   {
     id: 'a3', name: 'A3', kind: 'audio', order: 7, height: 56, locked: false, visible: true, muted: false, solo: false, clips: [],
@@ -83,8 +59,12 @@ const audioTracks: Track[] = [
 
 export const timeline: Timeline = {
   id: 'timeline-main',
-  fps: 29.97,
-  duration: 1000,
+  // 25, matching what Emerald actually captures. This is the timeline the editor loads at startup,
+  // and it wins over the store's own default — components snapshot timelineStore.fps when they set
+  // up, so a different value here would silently put the ruler, playhead and monitors on a
+  // different timebase from the clips.
+  fps: 25,
+  duration: 0,
   tracks: [...videoTracks, ...audioTracks],
   playhead: 0,
 };
@@ -102,7 +82,7 @@ export const project: Project = {
   name: 'Emerald Live Edit',
   createdAt: now,
   updatedAt: now,
-  fps: 29.97,
+  fps: 25,
   resolution: '1920x1080',
   timelineId: timeline.id,
   mediaAssets,
@@ -113,7 +93,7 @@ export const captureInfo: CaptureInfo = {
   title: 'Matchday Broadcast - Live Feed',
   description: 'Primary ingest from Cam 1, stadium feed.',
   duration: 0,
-  fps: 59.94,
+  fps: 25,
   resolution: '1920x1080',
   codec: 'H.264',
   bitrate: '50 Mbps',
@@ -124,7 +104,7 @@ export const playbackInfo: PlaybackInfo = {
   clipId: null,
   filePath: '/media/cam1-wide-001.mov',
   duration: 260,
-  fps: 59.94,
+  fps: 25,
   resolution: '1920x1080',
   codec: 'ProRes 422',
   audioChannels: 2,
@@ -140,7 +120,7 @@ export const systemStatus: SystemStatus = {
   playing: false,
   cpuUsage: 32,
   memoryUsage: 48,
-  fps: 59.94,
+  fps: 25,
   networkQuality: 'excellent',
   delayMs: 120,
 };

@@ -28,8 +28,11 @@ async function load(): Promise<void> {
   }
 }
 
+// clips.value also holds "ts" segments (raw HLS chunks for a still-recording session) fetched
+// alongside the "mp4" ones — kept in memory for playback/timeline use, but never shown in this
+// grid, which is clip browsing, not raw segment browsing.
 const filtered = computed(() =>
-  clips.value.filter((c) => c.fileName.toLowerCase().includes(search.value.toLowerCase())),
+  clips.value.filter((c) => c.kind === 'mp4' && c.fileName.toLowerCase().includes(search.value.toLowerCase())),
 );
 const folderName = computed(() => clips.value[0]?.sessionFolder ?? 'Recordings');
 
@@ -83,7 +86,7 @@ function formatCreated(iso: string): string {
       >
         <div class="relative w-full shrink-0 overflow-hidden bg-black" style="height: 72px">
           <img
-            :src="clip.thumbnailUrl"
+            :src="clip.thumbnailUrl ?? ''"
             :alt="clip.fileName"
             class="absolute inset-0 h-full w-full object-cover"
             loading="lazy"

@@ -35,7 +35,7 @@ function onDrop(event: DragEvent): void {
   if (!raw) return;
   event.preventDefault();
 
-  let data: { name: string; url: string; thumbnail?: string; durationSeconds?: number };
+  let data: { name: string; url: string; thumbnail?: string; durationSeconds?: number; hasAudio?: boolean };
   try {
     data = JSON.parse(raw);
   } catch {
@@ -52,6 +52,7 @@ function onDrop(event: DragEvent): void {
     trackId: props.track.id,
     startFrame,
     kind: props.track.kind === 'audio' ? 'audio' : 'video',
+    hasAudio: data.hasAudio,
   });
 }
 </script>

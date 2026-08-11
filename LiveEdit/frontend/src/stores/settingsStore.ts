@@ -21,7 +21,7 @@ export const useSettingsStore = defineStore('settings', {
     autoSave: true,
     snapToFrame: true,
     showAudioMeters: true,
-    defaultFps: 29.97,
+    defaultFps: 25,
     defaultResolution: '1920x1080',
     proxyPlayback: false,
     liveEditMode: false,

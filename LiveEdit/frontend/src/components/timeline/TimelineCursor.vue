@@ -15,7 +15,7 @@ const props = defineProps<{
 }>();
 
 const timelineStore = useTimelineStore();
-const { framesToTimecode } = useTimecode(props.fps);
+const { framesToTimecode } = useTimecode(() => props.fps);
 
 const visible = computed(() => timelineStore.mouseFrame !== null);
 const left = computed(() => (timelineStore.mouseFrame ?? 0) * props.pixelsPerFrame);

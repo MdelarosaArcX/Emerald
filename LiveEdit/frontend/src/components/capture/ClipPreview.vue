@@ -1,55 +1,48 @@
 <script setup lang="ts">
 /**
- * Live Edit mode left-column preview. Unlike CapturePreview (which embeds the live capture feed),
- * this is a plain PLAYBACK of the clip currently selected in the media browser below
- * (programStore.clip). It plays a lightweight backend proxy of the recorded segment — the raw
- * segments are large non-faststart 4K files — showing the clip's thumbnail as a poster meanwhile.
+ * Live Edit mode's left-column preview. This is PLAYBACK of the clip currently selected in the
+ * Video Library below (programStore.clip) — not the live capture feed. It replaces CapturePreview
+ * in that column: the operator is cutting recorded material here, so the useful thing to see is
+ * the clip they are about to edit, with its media details underneath.
+ *
+ * The details block is the "Browse Media" panel: media path, title, duration/rate, and the proxy
+ * vs. hi-res format pair, so the operator can tell at a glance which rendition they are looking at.
  */
-import { requestProxy } from '@/services/render';
 import { useProgramStore } from '@/stores/programStore';
-import { ArrowsPointingOutIcon, FilmIcon, GlobeAltIcon, PauseIcon, PlayIcon } from '@heroicons/vue/24/outline';
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { useTimecode } from '@/composables/useTimecode';
+import {
+  ArrowPathIcon,
+  ArrowsPointingOutIcon,
+  BackwardIcon,
+  FilmIcon,
+  ForwardIcon,
+  GlobeAltIcon,
+  PauseIcon,
+  PlayIcon,
+  StopIcon,
+} from '@heroicons/vue/24/outline';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 const programStore = useProgramStore();
-const fps = computed(() => programStore.fps || 25);
 
 const frameRef = ref<HTMLElement | null>(null);
 const videoRef = ref<HTMLVideoElement | null>(null);
-const proxyUrl = ref('');
-const proxyLoading = ref(false);
 const isPlaying = ref(false);
-const currentTime = ref(0);
-const duration = ref(0);
+const currentSeconds = ref(0);
+const durationSeconds = ref(0);
 
 const clip = computed(() => programStore.clip);
-const source = computed(() => clip.value?.url ?? '');
-// The proxy URL is a relative path ("/proxies/x.mp4") served by our own backend — a valid video
-// source even though it isn't absolute. (Testing it against /^https?:/ was a real bug elsewhere.)
-const hasVideo = computed(() => proxyUrl.value.length > 0);
+const fps = computed(() => programStore.fps || 25);
+const { framesToTimecode } = useTimecode(() => fps.value);
 
-let token = 0;
-watch(
-  source,
-  async (src) => {
-    proxyUrl.value = '';
-    isPlaying.value = false;
-    currentTime.value = 0;
-    duration.value = 0;
-    if (!/^https?:/i.test(src)) {
-      proxyLoading.value = false;
-      return;
-    }
-    const t = ++token;
-    proxyLoading.value = true;
-    const url = await requestProxy(src);
-    if (t !== token) return; // superseded by a newer selection
-    proxyLoading.value = false;
-    proxyUrl.value = url ?? '';
-  },
-  { immediate: true },
-);
+/** Elapsed position as a broadcast HH:MM:SS:FF readout (frames 00..24 at 25 fps). */
+const positionTimecode = computed(() => framesToTimecode(Math.round(currentSeconds.value * fps.value)));
+const durationTimecode = computed(() => framesToTimecode(Math.round(durationSeconds.value * fps.value)));
 
-watch(proxyUrl, (url) => {
+// Source is applied imperatively rather than via :src. Binding it would make Vue set the attribute
+// during patch, before the element's own load state has been reset, and a mid-flight src swap on a
+// <video> that is still fetching the previous clip leaves it wedged with a stale buffer.
+function applySource(url: string): void {
   const v = videoRef.value;
   if (!v) return;
   if (url) {
@@ -59,28 +52,59 @@ watch(proxyUrl, (url) => {
     v.removeAttribute('src');
     v.load();
   }
-});
+}
+
+// Applied from BOTH the watcher and onMounted, and deliberately so. Toggling Live Edit mode
+// remounts this deck, so a clip picked beforehand is already in the store when setup runs — at
+// which point videoRef is still null and the watcher has nothing to write to. Without the mounted
+// pass that clip never gets a source and the player comes up blank.
+watch(
+  () => clip.value?.url ?? '',
+  (url) => {
+    isPlaying.value = false;
+    currentSeconds.value = 0;
+    durationSeconds.value = 0;
+    applySource(url);
+  },
+);
+onMounted(() => applySource(clip.value?.url ?? ''));
 
 /** Start playback, surviving the browser autoplay policy (retry muted, then restore audio). */
 function playVideo(v: HTMLVideoElement): void {
-  const p = v.play();
-  if (p && typeof p.catch === 'function') {
-    p.catch(() => {
-      v.muted = true;
-      v.play()
-        .then(() => {
-          v.muted = false;
-        })
-        .catch(() => {});
-    });
-  }
+  v.play().catch(() => {
+    v.muted = true;
+    v.play()
+      .then(() => {
+        v.muted = false;
+      })
+      .catch(() => {});
+  });
 }
 
 function togglePlay(): void {
   const v = videoRef.value;
-  if (!v || !hasVideo.value) return;
+  if (!v || !clip.value) return;
   if (v.paused) playVideo(v);
   else v.pause();
+}
+
+function stop(): void {
+  const v = videoRef.value;
+  if (!v) return;
+  v.pause();
+  v.currentTime = 0;
+}
+
+function reload(): void {
+  const v = videoRef.value;
+  if (!v || !clip.value) return;
+  v.load();
+}
+
+function skip(seconds: number): void {
+  const v = videoRef.value;
+  if (!v || !Number.isFinite(v.duration)) return;
+  v.currentTime = Math.min(Math.max(0, v.currentTime + seconds), v.duration);
 }
 
 function onSeek(event: Event): void {
@@ -93,29 +117,27 @@ function requestFullscreen(): void {
   frameRef.value?.requestFullscreen?.();
 }
 
-function pad(n: number): string {
-  return String(Math.floor(n)).padStart(2, '0');
-}
-function clock(seconds: number): string {
-  const s = Number.isFinite(seconds) ? seconds : 0;
-  return `${pad(s / 60)}:${pad(s % 60)}`;
-}
-/** HH:MM:SS:FF timecode for the details panel. */
-function timecode(seconds: number): string {
-  const s = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
-  const ff = Math.round((s - Math.floor(s)) * fps.value);
-  return `${pad(s / 3600)}:${pad((s / 60) % 60)}:${pad(s % 60)}:${pad(ff)}`;
-}
-
-/** Directory portion of the clip's served URL, e.g. "/recordings/062226/". */
+/**
+ * Directory the clip is served from, e.g. "/recordings/emerald080520262002/". This is the served
+ * URL path, not Emerald's own disk path — the backend never reports the latter, and showing a
+ * fabricated local path would be worse than showing the real one media actually loads from.
+ */
 const mediaPath = computed(() => {
-  const u = clip.value?.url;
-  if (!u) return '—';
+  const url = clip.value?.url;
+  if (!url) return '—';
   try {
-    return new URL(u).pathname.replace(/[^/]+$/, '');
+    return new URL(url).pathname.replace(/[^/]+$/, '');
   } catch {
-    return u.replace(/[^/]+$/, '');
+    return url.replace(/[^/]+$/, '');
   }
+});
+
+const sizeLabel = computed(() => {
+  const bytes = clip.value?.size ?? 0;
+  if (!bytes) return '—';
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
+  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`;
+  return `${(bytes / 1e3).toFixed(0)} KB`;
 });
 
 onBeforeUnmount(() => videoRef.value?.pause());
@@ -123,72 +145,78 @@ onBeforeUnmount(() => videoRef.value?.pause());
 
 <template>
   <section class="flex h-full min-w-0 flex-1 flex-col gap-2 rounded-xl border border-white/5 bg-surface-900/80 p-2.5 shadow-panel">
-    <!-- Preview header + video -->
+    <!-- Preview -->
     <div class="shrink-0 overflow-hidden rounded-lg border border-white/5 bg-black">
       <div class="flex items-center justify-between bg-gradient-to-r from-teal-500/80 to-emerald-600/70 px-2 py-0.5">
-        <span class="truncate font-mono text-[11px] font-semibold tracking-wider text-black/90">{{ clip?.fileName ?? 'Clip Preview' }}</span>
-        <span class="font-mono text-[10px] tracking-wider text-black/80">{{ clock(currentTime) }} / {{ clock(duration) }}</span>
+        <span class="truncate font-mono text-[11px] font-semibold tracking-wider text-black/90">
+          {{ clip?.fileName ?? 'Clip Preview' }}
+        </span>
+        <span class="shrink-0 font-mono text-[10px] tracking-wider text-black/80">{{ positionTimecode }}</span>
       </div>
-      <!-- Compact preview so the Browse Media details below get the room to expand. -->
       <div ref="frameRef" class="relative aspect-video max-h-[150px] overflow-hidden bg-black">
-        <!-- Thumbnail poster while no video / no selection -->
-        <div
-          v-if="clip?.thumbnailUrl"
-          v-show="!hasVideo"
-          class="absolute inset-0 bg-contain bg-center bg-no-repeat"
-          :style="{ backgroundImage: `url(${clip.thumbnailUrl})` }"
-        />
         <video
-          v-show="hasVideo"
+          v-show="clip"
           ref="videoRef"
           class="absolute inset-0 h-full w-full object-contain"
-          :poster="clip?.thumbnailUrl"
+          :poster="clip?.thumbnailUrl ?? undefined"
+          preload="metadata"
           playsinline
           @play="isPlaying = true"
           @pause="isPlaying = false"
-          @timeupdate="currentTime = videoRef?.currentTime ?? 0"
-          @loadedmetadata="duration = videoRef?.duration ?? 0"
+          @timeupdate="currentSeconds = videoRef?.currentTime ?? 0"
+          @loadedmetadata="durationSeconds = Number.isFinite(videoRef?.duration) ? (videoRef?.duration ?? 0) : 0"
         />
         <div v-if="!clip" class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-center text-[11px] text-slate-600">
           <FilmIcon class="h-6 w-6 text-white/15" />
           Select a clip below to preview it
         </div>
-        <div v-if="proxyLoading && !hasVideo && clip" class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-slate-200 backdrop-blur">
-          Preparing preview…
-        </div>
       </div>
     </div>
 
-    <!-- Transport row -->
-    <div class="flex shrink-0 items-center gap-2 rounded-lg border border-white/5 bg-surface-850/70 px-2 py-1.5">
+    <!-- Scrub bar -->
+    <input
+      type="range"
+      min="0"
+      :max="durationSeconds || 0"
+      step="0.04"
+      :value="currentSeconds"
+      class="h-1 w-full shrink-0 cursor-pointer appearance-none rounded-full bg-white/10 accent-emerald-400 disabled:opacity-40"
+      :disabled="!clip"
+      title="Seek"
+      @input="onSeek"
+    />
+
+    <!-- Transport -->
+    <div class="flex shrink-0 items-center justify-between rounded-lg border border-white/5 bg-surface-850/70 px-2 py-1.5">
       <button
-        class="rounded p-1 transition"
+        class="rounded p-1 transition disabled:opacity-30"
         :class="isPlaying ? 'text-emerald-300' : 'text-slate-400 hover:text-emerald-300'"
         :title="isPlaying ? 'Pause' : 'Play'"
-        :disabled="!hasVideo"
+        :disabled="!clip"
         @click="togglePlay"
       >
         <PauseIcon v-if="isPlaying" class="h-4 w-4" />
         <PlayIcon v-else class="h-4 w-4" />
       </button>
-      <input
-        type="range"
-        min="0"
-        :max="duration || 0"
-        step="0.1"
-        :value="currentTime"
-        class="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-white/10 accent-emerald-400 disabled:opacity-40"
-        :disabled="!hasVideo"
-        title="Seek"
-        @input="onSeek"
-      />
+      <button class="rounded p-1 text-slate-400 transition hover:text-rose-400 disabled:opacity-30" title="Stop" :disabled="!clip" @click="stop">
+        <StopIcon class="h-4 w-4" />
+      </button>
+      <button class="rounded p-1 text-slate-400 transition hover:text-teal-300 disabled:opacity-30" title="Reload clip" :disabled="!clip" @click="reload">
+        <ArrowPathIcon class="h-4 w-4" />
+      </button>
+      <button class="rounded p-1 text-slate-400 transition hover:text-emerald-300 disabled:opacity-30" title="Back 10s" :disabled="!clip" @click="skip(-10)">
+        <BackwardIcon class="h-4 w-4" />
+      </button>
+      <button class="rounded p-1 text-slate-400 transition hover:text-emerald-300 disabled:opacity-30" title="Forward 10s" :disabled="!clip" @click="skip(10)">
+        <ForwardIcon class="h-4 w-4" />
+      </button>
       <span class="flex h-5 w-6 items-center justify-center rounded border border-emerald-400/40 bg-emerald-400/10 font-mono text-[9px] font-bold text-emerald-300">VU</span>
       <button class="rounded p-1 text-slate-400 transition hover:text-emerald-300" title="Fullscreen" @click="requestFullscreen">
         <ArrowsPointingOutIcon class="h-4 w-4" />
       </button>
     </div>
 
-    <!-- BROWSE MEDIA details -->
+    <!-- BROWSE MEDIA -->
     <div class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-white/5 bg-surface-850/60 p-3 text-xs">
       <h3 class="mb-3 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-slate-300">
         <GlobeAltIcon class="h-4 w-4 text-teal-400" />
@@ -202,11 +230,16 @@ onBeforeUnmount(() => videoRef.value?.pause());
         <dd class="truncate text-slate-200" :title="clip?.fileName">{{ clip?.fileName ?? '—' }}</dd>
 
         <dt class="text-slate-500">Description</dt>
-        <dd class="text-slate-200">{{ clip ? 'Recorded segment' : '—' }}</dd>
+        <dd class="truncate text-slate-200" :title="clip?.sessionFolder">
+          {{ clip ? `Recorded segment · ${clip.sessionFolder}` : '—' }}
+        </dd>
+
+        <dt class="text-slate-500">Size</dt>
+        <dd class="font-mono text-slate-200">{{ sizeLabel }}</dd>
 
         <dt class="self-start text-slate-500">Duration</dt>
         <dd class="text-right font-mono text-slate-200">
-          <div>{{ timecode(duration) }}</div>
+          <div>{{ durationTimecode }}</div>
           <div class="text-slate-400">{{ fps }} FPS</div>
         </dd>
 

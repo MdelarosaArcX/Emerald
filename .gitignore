@@ -8,4 +8,6 @@ frontend/dist/
 artifacts/
 *.run
 *.zip
-backend/data/
+backend/logs/
+
+backend/logs/logs.txt

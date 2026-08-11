@@ -12,6 +12,10 @@ export const SOCKET_EVENTS = {
   CAPTURE_UPDATED: 'captureUpdated',
   PLAYBACK_UPDATED: 'playbackUpdated',
   RECORDING_CHANGED: 'recordingChanged',
+  // A single edit-capture segment has finished writing and is ready to be dropped onto the
+  // timeline. Deliberately distinct from RECORDING_CHANGED (capture on/off state) even though
+  // both are capture-related — different payload shape, different consumer.
+  EDIT_CAPTURE_SEGMENT_ADDED: 'editCaptureSegmentAdded',
 } as const;
 
 let io: SocketIOServer | null = null;

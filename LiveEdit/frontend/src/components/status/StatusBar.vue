@@ -8,7 +8,7 @@ import { useTimelineStore } from '@/stores/timelineStore';
 import { computed } from 'vue';
 
 const timelineStore = useTimelineStore();
-const { framesToTimecode } = useTimecode(timelineStore.fps);
+const { framesToTimecode } = useTimecode(() => timelineStore.fps);
 
 const currentTimecode = computed(() => framesToTimecode(timelineStore.playhead));
 const totalTimecode = computed(() => framesToTimecode(timelineStore.duration));

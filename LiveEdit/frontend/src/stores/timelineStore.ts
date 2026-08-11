@@ -11,9 +11,37 @@ interface TimelineState {
   loading: boolean;
   error: string | null;
   mouseFrame: number | null;
-  /** Frame up to which the timeline has gone/is going to air (0 = nothing on air). Drives the red
-   *  on-air highlight. */
-  onAirFrame: number;
+  /** Whether the Program monitor is actively advancing the playhead right now (vs. paused/scrubbing). */
+  isPlaying: boolean;
+  /**
+   * Set whenever a live-captured segment lands on V4 — TimelineEditor.vue watches this and
+   * scrolls its viewport to bring that frame into view, then clears it. Frame 0 is midnight, so
+   * without this the operator would otherwise have to manually scroll from 0 up to wherever
+   * "now" happens to be (e.g. 21:52:00) every time they open the editor.
+   */
+  pendingScrollFrame: number | null;
+}
+
+/** Payload emitted by the LiveEdit backend when an edit-capture segment finishes writing. */
+export interface EditCaptureSegmentAddedPayload {
+  folder: string;
+  index: number;
+  fileName: string;
+  proxyUrl: string;
+  durationSeconds: number;
+  hasAudio: boolean;
+  // The segment master file's own birthtime — its real start time, not its finish time (see
+  // editCaptureService.js's startTimecode comment: derived from birthtime directly, no duration
+  // subtraction, specifically because -use_wallclock_as_timestamps keeps this tracking true
+  // elapsed time even under upstream frame drops).
+  createdAt: string;
+}
+
+/** Frame 0 on V4 is midnight (local time) of the given moment's calendar day — see appendCaptureSegment(). */
+function startOfDayMs(ms: number): number {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
 }
 
 const MIN_ZOOM = 0.25;
@@ -29,46 +57,6 @@ function newTrackId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
 }
 
-/**
- * Build one recorded segment as a clip on the shared session track, placed at `start`.
- * Stable id per folder+file so live appends never double-add.
- */
-function makeSegmentClip(
-  folder: string,
-  seg: number,
-  s: { fileName: string; url: string; thumbnail?: string },
-  start: number,
-  trackId: string,
-): Clip {
-  return {
-    id: `c-${folder}-${s.fileName}`,
-    name: s.fileName,
-    path: s.url,
-    track: trackId,
-    start,
-    duration: seg,
-    trimIn: 0,
-    trimOut: seg,
-    color: '#14b8a6',
-    effects: [],
-    type: 'video',
-    thumbnail: s.thumbnail,
-    opacity: 100,
-    rotation: 0,
-    scale: 100,
-    position: { x: 0, y: 0 },
-    speed: 1,
-    volume: 100,
-    locked: false,
-    autoFit: true,
-  };
-}
-
-/** The single video lane every session segment is placed on. */
-function makeSessionTrack(trackId: string, clips: Clip[]): Track {
-  return { id: trackId, name: 'V1', kind: 'video', order: 0, height: 56, locked: false, visible: true, muted: false, solo: false, clips };
-}
-
 export const useTimelineStore = defineStore('timeline', {
   state: (): TimelineState => ({
     timeline: null,
@@ -78,7 +66,8 @@ export const useTimelineStore = defineStore('timeline', {
     loading: false,
     error: null,
     mouseFrame: null,
-    onAirFrame: 0,
+    isPlaying: false,
+    pendingScrollFrame: null,
   }),
 
   getters: {
@@ -100,11 +89,26 @@ export const useTimelineStore = defineStore('timeline', {
     playhead(state): number {
       return state.timeline?.playhead ?? 0;
     },
+    /**
+     * Emerald captures 25 fps, and this is the timebase the whole editor runs on: clip positions
+     * are laid down as secondsSinceMidnight * fps, so it has to match both the material and the
+     * whole-number divisor useTimecode renders with, or the time-of-day clock drifts.
+     */
     fps(state): number {
-      return state.timeline?.fps ?? 29.97;
+      return state.timeline?.fps ?? 25;
     },
     duration(state): number {
       return state.timeline?.duration ?? 0;
+    },
+    /**
+     * The earliest clip.start across every track, or null if the timeline is empty. Frame 0 is
+     * midnight (see appendCaptureSegment), so a fresh/idle playhead sitting at 0 is normally in a
+     * huge empty gap before any real content — Play uses this to jump there first instead of
+     * silently doing nothing for the (possibly many real-time) hours until playback reaches it.
+     */
+    earliestClipFrame(): number | null {
+      const starts = this.allClips.map((c) => c.start);
+      return starts.length ? Math.min(...starts) : null;
     },
   },
 
@@ -129,6 +133,68 @@ export const useTimelineStore = defineStore('timeline', {
       socket.on(SOCKET_EVENTS.TIMELINE_UPDATED, (timeline: Timeline) => {
         this.timeline = timeline;
       });
+      socket.on(SOCKET_EVENTS.EDIT_CAPTURE_SEGMENT_ADDED, (segment: EditCaptureSegmentAddedPayload) => {
+        this.appendCaptureSegment(segment);
+      });
+    },
+
+    setPlaying(value: boolean): void {
+      this.isPlaying = value;
+    },
+
+    /**
+     * Appends a just-finished edit-capture segment to the dedicated V4 track (creating one if
+     * none exists yet), positioned at its real time-of-day timecode — frame 0 on V4 (and the
+     * whole timeline) is midnight local time, so a segment captured at 9:30pm lands at frame
+     * 21:30:00:00, matching wall-clock time directly rather than time-since-session-start. A
+     * stall or dropped segment still shows up as a real gap instead of clips being silently
+     * chained back-to-back regardless of when they actually happened.
+     *
+     * Always targets the track named "V4" specifically — not just "whichever video track sorts
+     * first" — so incoming live segments land in one predictable, reserved lane regardless of
+     * how many other tracks the operator has added, reordered, or locked for their own manual
+     * editing on V1-V3.
+     */
+    appendCaptureSegment(payload: EditCaptureSegmentAddedPayload): void {
+      if (!this.timeline) {
+        console.warn('Ignoring edit-capture segment: timeline has not loaded yet.', payload);
+        return;
+      }
+
+      let track = this.videoTracks.find((t) => t.name === 'V4');
+      if (!track) {
+        const trackId = this.addTrack('video');
+        track = this.timeline.tracks.find((t) => t.id === trackId);
+        if (track) track.name = 'V4';
+      }
+      if (!track) return;
+
+      if (track.locked) {
+        console.warn('Ignoring edit-capture segment: V4 is locked.', payload);
+        return;
+      }
+
+      const segmentStartedAtMs = new Date(payload.createdAt).getTime();
+      const dayStartMs = startOfDayMs(segmentStartedAtMs);
+      const timecodeFrame = Math.round(((segmentStartedAtMs - dayStartMs) / 1000) * this.fps);
+      // Clamp forward only — a genuine gap (dropped/delayed segment) still shows up as a gap, but
+      // clock imprecision can't land this a frame or two *before* the previous clip's end and
+      // overlap it.
+      const previousClipEnd = track.clips.reduce((end, c) => Math.max(end, c.start + c.duration), 0);
+      const startFrame = Math.max(timecodeFrame, previousClipEnd);
+      const durationFrames = Math.round(payload.durationSeconds * this.fps);
+
+      this.addClipFromSource({
+        name: payload.fileName,
+        url: payload.proxyUrl,
+        durationFrames,
+        trackId: track.id,
+        startFrame,
+        hasAudio: payload.hasAudio,
+      });
+
+      // Bring the newly-landed segment into view — see pendingScrollFrame's doc comment.
+      this.pendingScrollFrame = startFrame;
     },
 
     selectClip(clipId: string | null): void {
@@ -137,17 +203,10 @@ export const useTimelineStore = defineStore('timeline', {
 
     setPlayhead(frames: number, emit = true): void {
       if (!this.timeline) return;
-      const dur = Number.isFinite(this.timeline.duration) ? this.timeline.duration : 0;
-      const f = Number.isFinite(frames) ? frames : 0;
-      this.timeline.playhead = Math.max(0, Math.min(f, dur));
+      this.timeline.playhead = Math.max(0, Math.min(frames, this.timeline.duration));
       if (emit) {
         getSocket().emit(SOCKET_EVENTS.PLAYHEAD_CHANGED, { playhead: this.timeline.playhead });
       }
-    },
-
-    /** Set the on-air frame (up to which the timeline has gone to air). Non-finite → 0. */
-    setOnAirFrame(frame: number): void {
-      this.onAirFrame = Number.isFinite(frame) && frame > 0 ? frame : 0;
     },
 
     /**
@@ -155,7 +214,7 @@ export const useTimelineStore = defineStore('timeline', {
      * thumbnail filmstrip) and one audio lane, both spanning the clip's real frame count at its
      * real fps — so the ruler, playhead and scrubbing all operate frame-for-frame on that clip.
      */
-    loadProgramClip(payload: { name: string; thumbnail: string; durationFrames: number; fps: number; url?: string }): void {
+    loadProgramClip(payload: { name: string; thumbnail: string; durationFrames: number; fps: number; url?: string; hasAudio?: boolean }): void {
       const duration = Math.max(1, Math.round(payload.durationFrames));
       const base = {
         path: payload.url ?? '',
@@ -171,9 +230,9 @@ export const useTimelineStore = defineStore('timeline', {
         speed: 1,
         volume: 100,
         locked: false,
-        autoFit: true,
       };
       const videoClip: Clip = { ...base, id: 'program-clip', name: payload.name, track: 'v1', color: '#14b8a6', type: 'video', thumbnail: payload.thumbnail };
+      const includeAudio = payload.hasAudio !== false;
       const audioClip: Clip = { ...base, id: 'program-audio', name: `${payload.name} · audio`, track: 'a1', color: '#34d399', type: 'audio' };
 
       this.timeline = {
@@ -183,7 +242,7 @@ export const useTimelineStore = defineStore('timeline', {
         playhead: 0,
         tracks: [
           { id: 'v1', name: 'V1', kind: 'video', order: 0, height: 76, locked: false, visible: true, muted: false, solo: false, clips: [videoClip] },
-          { id: 'a1', name: 'A1', kind: 'audio', order: 1, height: 60, locked: false, visible: true, muted: false, solo: false, clips: [audioClip] },
+          { id: 'a1', name: 'A1', kind: 'audio', order: 1, height: 60, locked: false, visible: true, muted: false, solo: false, clips: includeAudio ? [audioClip] : [] },
         ],
       };
       this.selectedClipId = 'program-clip';
@@ -195,70 +254,13 @@ export const useTimelineStore = defineStore('timeline', {
     },
 
     /**
-     * Build a fresh timeline from a recording session's segments, laid out back-to-back on a video
-     * lane (+ paired audio). Used to load a whole session for editing; live sessions then keep
-     * appending via appendSessionSegments().
+     * Insert a clip (dragged from the media browser) onto a track at a given start frame. When
+     * inserting a video clip onto a non-audio track and the source actually has audio (hasAudio,
+     * default true — most recorded segments do), a matching audio clip is also dropped onto the
+     * first unlocked audio track (creating one if none exists yet) at the same start/duration, so
+     * the waveform lane appears immediately instead of only showing up once someone thinks to add
+     * it manually — the same pairing loadProgramClip already does for the click-to-load path.
      */
-    loadSession(payload: { folder: string; fps: number; nominalSeconds: number; segments: { fileName: string; url: string; thumbnail?: string; index: number }[] }): void {
-      const fps = Number.isFinite(payload.fps) && payload.fps > 0 ? payload.fps : 25;
-      const nominal = Number.isFinite(payload.nominalSeconds) && payload.nominalSeconds > 0 ? payload.nominalSeconds : 120;
-      const seg = Math.max(1, Math.round(nominal * fps));
-      const trackId = `t-${payload.folder}`;
-      // All segments share ONE video lane, segmented by file and laid out left→right by timecode
-      // (index × segment length) so they never overlap and the playhead sweeps across the sequence.
-      const clips: Clip[] = payload.segments
-        .map((s, i) => {
-          const idx = Number.isFinite(s.index) ? s.index : i;
-          return makeSegmentClip(payload.folder, seg, s, idx * seg, trackId);
-        })
-        .sort((a, b) => a.start - b.start);
-      const duration = clips.reduce((m, c) => Math.max(m, c.start + c.duration), seg);
-      this.timeline = {
-        id: `session-${payload.folder}`,
-        fps,
-        duration: Math.max(1, duration),
-        playhead: 0,
-        tracks: [makeSessionTrack(trackId, clips)],
-      };
-      this.selectedClipId = null;
-    },
-
-    /** Append newly-recorded segments onto the shared session lane, positioned by timecode. Returns how many were added. */
-    appendSessionSegments(payload: { folder: string; fps: number; nominalSeconds: number; segments: { fileName: string; url: string; thumbnail?: string; index: number }[] }): number {
-      if (!this.timeline) return 0;
-      const fps = Number.isFinite(payload.fps) && payload.fps > 0 ? payload.fps : (this.timeline.fps || 25);
-      const nominal = Number.isFinite(payload.nominalSeconds) && payload.nominalSeconds > 0 ? payload.nominalSeconds : 120;
-      const seg = Math.max(1, Math.round(nominal * fps));
-
-      const trackId = `t-${payload.folder}`;
-      let track = this.timeline.tracks.find((t) => t.id === trackId);
-      if (!track) {
-        track = makeSessionTrack(trackId, []);
-        this.timeline.tracks.push(track);
-      }
-      const existingClips = new Set(track.clips.map((c) => c.id));
-      let fallback = track.clips.length;
-      let end = Number.isFinite(this.timeline.duration) ? this.timeline.duration : 0;
-      let added = 0;
-      for (const s of payload.segments) {
-        if (existingClips.has(`c-${payload.folder}-${s.fileName}`)) continue;
-        const idx = Number.isFinite(s.index) ? s.index : fallback;
-        fallback += 1;
-        const clip = makeSegmentClip(payload.folder, seg, s, idx * seg, trackId);
-        track.clips.push(clip);
-        end = Math.max(end, clip.start + clip.duration);
-        added += 1;
-      }
-      if (added) {
-        track.clips.sort((a, b) => a.start - b.start);
-        this.timeline.duration = end;
-      }
-      return added;
-    },
-
-    /** Insert a clip (dragged from the media browser) onto a track at a given start frame. If it
-     * would overlap an existing clip on the target track, a new track is created for it so clips
-     * never overlap in time on the same lane. */
     addClipFromSource(payload: {
       name: string;
       url: string;
@@ -267,30 +269,21 @@ export const useTimelineStore = defineStore('timeline', {
       trackId: string;
       startFrame: number;
       kind?: 'video' | 'audio';
+      hasAudio?: boolean;
     }): string | null {
-      let track = this.timeline?.tracks.find((t) => t.id === payload.trackId);
+      const track = this.timeline?.tracks.find((t) => t.id === payload.trackId);
       if (!this.timeline || !track || track.locked) return null;
 
-      const duration = Number.isFinite(payload.durationFrames) ? Math.max(1, Math.round(payload.durationFrames)) : 1;
+      const duration = Math.max(1, Math.round(payload.durationFrames));
+      const startFrame = Math.max(0, Math.round(payload.startFrame));
       const isAudio = payload.kind === 'audio' || track.kind === 'audio';
-      const start = Number.isFinite(payload.startFrame) ? Math.max(0, Math.round(payload.startFrame)) : 0;
-
-      // If the drop overlaps an existing clip on this track, put it on a fresh track instead.
-      const overlaps = (t: Track): boolean =>
-        t.clips.some((c) => start < c.start + c.duration && c.start < start + duration);
-      if (overlaps(track)) {
-        const newId = this.addTrack(isAudio ? 'audio' : 'video');
-        const created = this.timeline.tracks.find((t) => t.id === newId);
-        if (created) track = created;
-      }
-
       const id = newClipId();
       const clip: Clip = {
         id,
         name: payload.name,
         path: payload.url,
-        track: track.id,
-        start,
+        track: payload.trackId,
+        start: startFrame,
         duration,
         trimIn: 0,
         trimOut: duration,
@@ -305,11 +298,28 @@ export const useTimelineStore = defineStore('timeline', {
         speed: 1,
         volume: 100,
         locked: false,
-        autoFit: true,
       };
       track.clips.push(clip);
       this.timeline.duration = Math.max(this.timeline.duration, clip.start + clip.duration);
       this.selectedClipId = id;
+
+      if (!isAudio && payload.hasAudio !== false) {
+        let audioTrack = this.timeline.tracks.find((t) => t.kind === 'audio' && !t.locked);
+        if (!audioTrack) {
+          const audioTrackId = this.addTrack('audio');
+          audioTrack = this.timeline.tracks.find((t) => t.id === audioTrackId);
+        }
+        audioTrack?.clips.push({
+          ...clip,
+          id: newClipId(),
+          name: `${payload.name} · audio`,
+          track: audioTrack.id,
+          color: '#34d399',
+          type: 'audio',
+          thumbnail: undefined,
+        });
+      }
+
       return id;
     },
 
@@ -345,40 +355,11 @@ export const useTimelineStore = defineStore('timeline', {
         duration: clip.duration - offset,
         trimIn: clip.trimIn + offset,
         trimOut: clip.trimOut,
-        autoFit: false,
       };
       clip.duration = offset;
       clip.trimOut = clip.trimIn + offset;
-      clip.autoFit = false;
       track.clips.push(right);
       this.selectedClipId = right.id;
-    },
-
-    /**
-     * Fit a freshly-added clip (and its same-source siblings, e.g. the paired audio) to the real
-     * source duration once known — capped so it never overlaps the next clip on the same lane.
-     */
-    fitClipToSource(clipId: string, realDurationFrames: number): void {
-      if (!this.timeline) return;
-      if (!Number.isFinite(realDurationFrames) || realDurationFrames <= 0) return;
-      const origin = this.allClips.find((c) => c.id === clipId);
-      if (!origin || !origin.autoFit) return;
-      const wanted = Math.max(1, Math.round(realDurationFrames));
-
-      for (const track of this.timeline.tracks) {
-        for (const c of track.clips) {
-          if (!c.autoFit || c.path !== origin.path || c.trimIn !== 0) continue;
-          const nextStart = track.clips
-            .filter((o) => o !== c && o.start > c.start)
-            .reduce((min, o) => Math.min(min, o.start), Number.POSITIVE_INFINITY);
-          const cap = Number.isFinite(nextStart) ? nextStart - c.start : Number.POSITIVE_INFINITY;
-          const d = Math.max(1, Math.min(wanted, cap));
-          c.duration = d;
-          c.trimOut = c.trimIn + d;
-          c.autoFit = false;
-          this.timeline.duration = Math.max(this.timeline.duration, c.start + d);
-        }
-      }
     },
 
     /** Remove a clip from the timeline. */
