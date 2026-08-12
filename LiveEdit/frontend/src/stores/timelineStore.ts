@@ -44,7 +44,10 @@ function startOfDayMs(ms: number): number {
   return date.getTime();
 }
 
-const MIN_ZOOM = 0.25;
+// Very low floor so the whole (time-of-day, potentially all-day) timeline can be compressed to fit
+// the viewport on full zoom-out — TimelineEditor computes the actual fit zoom from the viewport
+// width and won't go below it, but the store must allow values this small.
+const MIN_ZOOM = 0.0002;
 const MAX_ZOOM = 8;
 
 /** Unique-enough id for clips created at runtime (drag-insert, split). */
@@ -150,10 +153,9 @@ export const useTimelineStore = defineStore('timeline', {
      * stall or dropped segment still shows up as a real gap instead of clips being silently
      * chained back-to-back regardless of when they actually happened.
      *
-     * Always targets the track named "V4" specifically — not just "whichever video track sorts
-     * first" — so incoming live segments land in one predictable, reserved lane regardless of
-     * how many other tracks the operator has added, reordered, or locked for their own manual
-     * editing on V1-V3.
+     * Targets the top video lane (the first non-fx video track by stacking order) so incoming live
+     * segments land in one predictable lane; if there's no video track at all one is created. The
+     * operator's own manual edits live on the lane(s) below it.
      */
     appendCaptureSegment(payload: EditCaptureSegmentAddedPayload): void {
       if (!this.timeline) {
@@ -161,16 +163,15 @@ export const useTimelineStore = defineStore('timeline', {
         return;
       }
 
-      let track = this.videoTracks.find((t) => t.name === 'V4');
+      let track = this.videoTracks.find((t) => t.kind === 'video');
       if (!track) {
         const trackId = this.addTrack('video');
         track = this.timeline.tracks.find((t) => t.id === trackId);
-        if (track) track.name = 'V4';
       }
       if (!track) return;
 
       if (track.locked) {
-        console.warn('Ignoring edit-capture segment: V4 is locked.', payload);
+        console.warn('Ignoring edit-capture segment: the live video lane is locked.', payload);
         return;
       }
 

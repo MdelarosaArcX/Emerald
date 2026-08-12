@@ -140,6 +140,10 @@ function onLoadedData(): void {
   const v = videoRef.value;
   if (!v) return;
   v.playbackRate = speed.value;
+  // Apply the current volume and only mute when explicitly muted — so recorded segments' audio
+  // actually plays out of the Program monitor by default.
+  v.volume = Math.max(0, Math.min(1, volume.value / 100));
+  v.muted = activeMuted.value;
   seekToPlayhead();
   if (isPlaying.value) v.play().catch(() => {});
 }

@@ -36,6 +36,83 @@ function runFfmpeg(args: string[]): Promise<void> {
   });
 }
 
+// --- Audio waveform ---------------------------------------------------------------------------
+const WAVEFORM_BUCKETS = 240;
+const waveformCache = new Map<string, number[]>();
+const waveformInFlight = new Map<string, Promise<number[]>>();
+
+/**
+ * Decode a source's audio to low-rate mono PCM and reduce it to `WAVEFORM_BUCKETS` peak amplitudes
+ * (0..1) for drawing the clip's waveform on the timeline. Reading the audio server-side sidesteps
+ * the browser's cross-origin restriction on analysing recorded segments via the Web Audio API.
+ */
+function extractPeaks(url: string): Promise<number[]> {
+  const key = keyFor(url);
+  const cached = waveformCache.get(key);
+  if (cached) return Promise.resolve(cached);
+  const existing = waveformInFlight.get(key);
+  if (existing) return existing;
+
+  const job = new Promise<number[]>((resolve, reject) => {
+    const args = ['-hide_banner', '-loglevel', 'error', '-i', url, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'];
+    const proc = spawn(FFMPEG, args, { windowsHide: true });
+    const chunks: Buffer[] = [];
+    let err = '';
+    proc.stdout.on('data', (d: Buffer) => chunks.push(d));
+    proc.stderr.on('data', (d) => (err += d.toString()));
+    proc.on('error', reject);
+    proc.on('exit', (code) => {
+      const buf = Buffer.concat(chunks);
+      const sampleCount = Math.floor(buf.length / 2);
+      if (sampleCount === 0) {
+        if (code !== 0) reject(new Error(err.slice(-400) || `ffmpeg exited ${code}`));
+        else resolve([]); // source has no audio track
+        return;
+      }
+      const per = Math.max(1, Math.floor(sampleCount / WAVEFORM_BUCKETS));
+      const peaks: number[] = [];
+      for (let b = 0; b < WAVEFORM_BUCKETS; b += 1) {
+        let max = 0;
+        for (let i = 0; i < per; i += 1) {
+          const idx = (b * per + i) * 2;
+          if (idx + 1 >= buf.length) break;
+          const v = Math.abs(buf.readInt16LE(idx)) / 32768;
+          if (v > max) max = v;
+        }
+        peaks.push(max);
+      }
+      const top = Math.max(0.0001, ...peaks);
+      resolve(peaks.map((p) => 0.08 + (p / top) * 0.92)); // normalise, keep a visible floor
+    });
+  })
+    .then((peaks) => {
+      if (peaks.length) waveformCache.set(key, peaks);
+      return peaks;
+    })
+    .finally(() => waveformInFlight.delete(key));
+
+  waveformInFlight.set(key, job);
+  return job;
+}
+
+/**
+ * GET /api/waveform?url=...  → { peaks: number[] } amplitude buckets (0..1) for an audio clip.
+ */
+export async function requestWaveform(req: Request, res: Response): Promise<void> {
+  const url = String((req.query.url ?? req.body?.url) || '');
+  if (!/^https?:\/\//i.test(url)) {
+    res.status(400).json({ success: false, error: 'A source url is required' });
+    return;
+  }
+  try {
+    const peaks = await extractPeaks(url);
+    res.json({ success: true, data: { peaks } });
+  } catch (e) {
+    logger.error('waveform extraction failed', e as Error);
+    res.status(500).json({ success: false, error: e instanceof Error ? e.message : 'waveform failed' });
+  }
+}
+
 const proxyInFlight = new Map<string, Promise<string>>();
 
 /** Generate (or reuse) a 480p faststart H.264 proxy for a source segment URL. Returns the cache filename. */

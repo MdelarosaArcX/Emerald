@@ -17,43 +17,28 @@ const now = new Date().toISOString();
 // a clip, but the monitor kept previewing the fake placeholder underneath it (whose fake
 // `/media/*` path isn't a real URL either, so it never even requested a proxy). Track structure
 // stays the same; only the seed clips are gone.
+// Two video slots by default (V2 on top, V1 below) rather than the old V1-V4 stack — a leaner
+// default lane set. Live-captured segments land on the top video lane (see
+// timelineStore.appendCaptureSegment); the operator can still add more lanes on demand (+V / +A).
 const videoTracks: Track[] = [
   {
-    id: 'v4', name: 'V4', kind: 'video', order: 0, height: 64, locked: false, visible: true, muted: false, solo: false,
+    id: 'v2', name: 'V2', kind: 'video', order: 0, height: 72, locked: false, visible: true, muted: false, solo: false,
     clips: [],
   },
   {
-    id: 'v3', name: 'V3', kind: 'video', order: 1, height: 64, locked: false, visible: true, muted: false, solo: false,
-    clips: [],
-  },
-  {
-    id: 'v2', name: 'V2', kind: 'video', order: 2, height: 64, locked: false, visible: true, muted: false, solo: false,
-    clips: [],
-  },
-  {
-    id: 'v1', name: 'V1', kind: 'video', order: 3, height: 80, locked: false, visible: true, muted: false, solo: false,
-    clips: [],
-  },
-  {
-    id: 'fx', name: 'FX', kind: 'fx', order: 4, height: 48, locked: false, visible: true, muted: false, solo: false,
+    id: 'v1', name: 'V1', kind: 'video', order: 1, height: 72, locked: false, visible: true, muted: false, solo: false,
     clips: [],
   },
 ];
 
 const audioTracks: Track[] = [
   {
-    id: 'a1', name: 'A1', kind: 'audio', order: 5, height: 56, locked: false, visible: true, muted: false, solo: false,
+    id: 'a1', name: 'A1', kind: 'audio', order: 2, height: 56, locked: false, visible: true, muted: false, solo: false,
     clips: [],
   },
   {
-    id: 'a2', name: 'A2', kind: 'audio', order: 6, height: 56, locked: false, visible: true, muted: false, solo: false,
+    id: 'a2', name: 'A2', kind: 'audio', order: 3, height: 56, locked: false, visible: true, muted: false, solo: false,
     clips: [],
-  },
-  {
-    id: 'a3', name: 'A3', kind: 'audio', order: 7, height: 56, locked: false, visible: true, muted: false, solo: false, clips: [],
-  },
-  {
-    id: 'a4', name: 'A4', kind: 'audio', order: 8, height: 56, locked: false, visible: true, muted: false, solo: false, clips: [],
   },
 ];
 

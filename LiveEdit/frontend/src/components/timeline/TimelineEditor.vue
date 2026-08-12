@@ -107,6 +107,27 @@ const BASE_PX_PER_FRAME = 3;
 const pixelsPerFrame = computed(() => BASE_PX_PER_FRAME * timelineStore.zoom);
 const contentWidth = computed(() => timelineStore.duration * pixelsPerFrame.value);
 
+// The zoom at which the entire timeline fits the visible viewport — the floor for zoom-out, so
+// "max zoom-out" shows everything fully compressed rather than stopping at an arbitrary minimum.
+function fitZoom(): number {
+  const el = scrollRef.value;
+  const frames = timelineStore.duration;
+  if (!el || frames <= 0) return 0.02;
+  // Leave headroom so the whole content sits inside the viewport with no residual scroll (the track
+  // lanes render a little past the nominal content width).
+  const usable = Math.max(0, el.clientWidth - 88);
+  return Math.min(1, Math.max(0.0002, usable / (frames * BASE_PX_PER_FRAME)));
+}
+function zoomIn(): void {
+  timelineStore.setZoom(timelineStore.zoom * 1.25);
+}
+function zoomOut(): void {
+  timelineStore.setZoom(Math.max(fitZoom(), timelineStore.zoom / 1.25));
+}
+function zoomFit(): void {
+  timelineStore.setZoom(fitZoom());
+}
+
 /** Drag-to-reorder track list; committing a new order writes back to the store. */
 const trackList = computed<Track[]>({
   get: () => timelineStore.tracks,
@@ -241,12 +262,15 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
           </button>
         </div>
         <div class="flex items-center gap-1 rounded-md border border-white/5 bg-surface-800 px-1 py-0.5">
-          <button class="rounded p-1 text-slate-400 hover:text-emerald-300" @click="timelineStore.zoomOut()">
+          <button class="rounded p-1 text-slate-400 hover:text-emerald-300" title="Zoom out" @click="zoomOut()">
             <MagnifyingGlassMinusIcon class="h-3.5 w-3.5" />
           </button>
           <span class="w-10 text-center font-mono text-[10px] text-slate-400">{{ Math.round(timelineStore.zoom * 100) }}%</span>
-          <button class="rounded p-1 text-slate-400 hover:text-emerald-300" @click="timelineStore.zoomIn()">
+          <button class="rounded p-1 text-slate-400 hover:text-emerald-300" title="Zoom in" @click="zoomIn()">
             <MagnifyingGlassPlusIcon class="h-3.5 w-3.5" />
+          </button>
+          <button class="rounded px-1 text-[9px] font-bold text-slate-400 transition hover:text-emerald-300" title="Fit the whole timeline to the view" @click="zoomFit()">
+            FIT
           </button>
         </div>
       </div>
