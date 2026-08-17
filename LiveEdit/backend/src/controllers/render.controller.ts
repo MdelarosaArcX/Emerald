@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import ffmpegStatic from 'ffmpeg-static';
 import { logger } from '../utils/logger';
+import { LOCAL_EXPORTS_AVAILABLE, LOCAL_EXPORTS_PATH, LOCAL_RECORDINGS_AVAILABLE, LOCAL_RECORDINGS_PATH } from '../utils/localRecordings';
 
 /**
  * Media pipeline: generates lightweight, browser-playable proxies of the (non-faststart, large)
@@ -37,38 +38,133 @@ function runFfmpeg(args: string[]): Promise<void> {
 }
 
 // --- Audio waveform ---------------------------------------------------------------------------
-const WAVEFORM_BUCKETS = 240;
-const waveformCache = new Map<string, number[]>();
-const waveformInFlight = new Map<string, Promise<number[]>>();
+/**
+ * Peak buckets returned for a whole source. Raised from 240 because a clip draws the slice of
+ * these covering its own trim, not the whole array: at 240 a two-minute segment gave one bucket
+ * per half-second, so a clip trimmed to a few seconds had barely a dozen buckets to draw and came
+ * out as blocks rather than a waveform — the exact failure this endpoint exists to prevent.
+ *
+ * Costs almost nothing to raise: the ffmpeg decode below dominates and happens either way, this
+ * only changes how finely the resulting PCM is reduced. At 8kHz mono a two-minute source is
+ * ~960k samples, so 2000 buckets still averages ~480 samples each, and the JSON stays tens of KB.
+ */
+const WAVEFORM_BUCKETS = 2000;
+/**
+ * Rate the audio is decoded to for analysis. Named rather than repeated as a literal because the
+ * duration reported below is derived from the sample count at this exact rate — if the ffmpeg
+ * argument and this constant ever disagreed, every clip's waveform would silently be windowed to
+ * the wrong part of its source.
+ */
+const AUDIO_ANALYSIS_RATE_HZ = 8000;
+/**
+ * Peaks plus the source's real decoded duration. The duration is what lets a clip map its trim
+ * points (which are frames into the source) onto indices in the peak array — without it a trimmed
+ * clip can only guess which part of the waveform is its own.
+ */
+interface SourceWaveform {
+  peaks: number[];
+  durationSeconds: number;
+}
+
+const waveformCache = new Map<string, SourceWaveform>();
+const waveformInFlight = new Map<string, Promise<SourceWaveform>>();
+
+/**
+ * Ceiling on one extraction. Without it a source that reads slowly has no way to end: measured
+ * against the Emerald backend while it was busy writing a ProRes recording, the same segment that
+ * decodes in 0.7s from local disk was still only 4% read after a minute over HTTP, and each
+ * stalled attempt kept its ffmpeg alive competing with the next. Failing lets the clip fall back
+ * to its flat line and try again later, which is the better outcome.
+ */
+const WAVEFORM_TIMEOUT_MS = 45_000;
+
+/**
+ * Rewrites an Emerald recordings URL to a path on this disk when Emerald's Recordings folder is
+ * local (EMERALD_RECORDINGS_PATH — same machine deployment, which is how this box runs).
+ *
+ * Worth the trouble because the alternative is pulling the whole segment back over HTTP from a
+ * backend that is frequently busy recording: ~126MB for two minutes of 1080p, to derive a few
+ * thousand numbers. Reading the identical file off disk took 0.7s against minutes over HTTP under
+ * load. Returns the original URL unchanged when there is no local copy, so the remote deployment
+ * keeps working exactly as before.
+ */
+function resolveReadableSource(url: string): string {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return url;
+  }
+
+  // Each mount maps a URL prefix onto the local folder Emerald serves it from.
+  const roots: Array<{ pattern: RegExp; root: string | null; available: boolean }> = [
+    { pattern: /^\/(?:recordings|local-recordings)\/(.+)$/, root: LOCAL_RECORDINGS_PATH, available: LOCAL_RECORDINGS_AVAILABLE },
+    { pattern: /^\/exports\/(.+)$/, root: LOCAL_EXPORTS_PATH, available: LOCAL_EXPORTS_AVAILABLE },
+  ];
+
+  const mount = roots.find((candidate) => candidate.available && candidate.root && candidate.pattern.test(pathname));
+  if (!mount || !mount.root) return url;
+
+  const match = mount.pattern.exec(pathname);
+  if (!match) return url;
+
+  const relative = decodeURIComponent(match[1]);
+  // Refuse anything that climbs out of the mounted root — the url is attacker-controllable in
+  // principle, and this turns it into a filesystem read.
+  const root = path.resolve(mount.root);
+  const candidate = path.resolve(root, relative);
+  if (!candidate.startsWith(root + path.sep)) return url;
+
+  return fs.existsSync(candidate) ? candidate : url;
+}
 
 /**
  * Decode a source's audio to low-rate mono PCM and reduce it to `WAVEFORM_BUCKETS` peak amplitudes
  * (0..1) for drawing the clip's waveform on the timeline. Reading the audio server-side sidesteps
  * the browser's cross-origin restriction on analysing recorded segments via the Web Audio API.
  */
-function extractPeaks(url: string): Promise<number[]> {
+function extractPeaks(url: string): Promise<SourceWaveform> {
   const key = keyFor(url);
   const cached = waveformCache.get(key);
   if (cached) return Promise.resolve(cached);
   const existing = waveformInFlight.get(key);
   if (existing) return existing;
 
-  const job = new Promise<number[]>((resolve, reject) => {
-    const args = ['-hide_banner', '-loglevel', 'error', '-i', url, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'];
+  const job = new Promise<SourceWaveform>((resolve, reject) => {
+    const source = resolveReadableSource(url);
+    const args = ['-hide_banner', '-loglevel', 'error', '-i', source, '-vn', '-ac', '1', '-ar', String(AUDIO_ANALYSIS_RATE_HZ), '-f', 's16le', 'pipe:1'];
     const proc = spawn(FFMPEG, args, { windowsHide: true });
     const chunks: Buffer[] = [];
     let err = '';
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      logger.warn(`waveform extraction timed out after ${WAVEFORM_TIMEOUT_MS}ms: ${source}`);
+      try { proc.kill(); } catch { /* already gone */ }
+    }, WAVEFORM_TIMEOUT_MS);
+
     proc.stdout.on('data', (d: Buffer) => chunks.push(d));
     proc.stderr.on('data', (d) => (err += d.toString()));
-    proc.on('error', reject);
+    proc.on('error', (e) => { clearTimeout(timer); reject(e); });
     proc.on('exit', (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        // Whatever was decoded before the kill covers only the start of the source, so drawing it
+        // would mislabel the clip's shape. Better to have no waveform than a wrong one.
+        reject(new Error('waveform extraction timed out'));
+        return;
+      }
       const buf = Buffer.concat(chunks);
       const sampleCount = Math.floor(buf.length / 2);
       if (sampleCount === 0) {
         if (code !== 0) reject(new Error(err.slice(-400) || `ffmpeg exited ${code}`));
-        else resolve([]); // source has no audio track
+        else resolve({ peaks: [], durationSeconds: 0 }); // source has no audio track
         return;
       }
+      // Derived from the sample count rather than probed separately: this is decoded mono PCM at a
+      // known rate, so it already describes exactly how much audio the peaks cover.
+      const durationSeconds = sampleCount / AUDIO_ANALYSIS_RATE_HZ;
       const per = Math.max(1, Math.floor(sampleCount / WAVEFORM_BUCKETS));
       const peaks: number[] = [];
       for (let b = 0; b < WAVEFORM_BUCKETS; b += 1) {
@@ -82,12 +178,15 @@ function extractPeaks(url: string): Promise<number[]> {
         peaks.push(max);
       }
       const top = Math.max(0.0001, ...peaks);
-      resolve(peaks.map((p) => 0.08 + (p / top) * 0.92)); // normalise, keep a visible floor
+      resolve({
+        peaks: peaks.map((p) => 0.08 + (p / top) * 0.92), // normalise, keep a visible floor
+        durationSeconds,
+      });
     });
   })
-    .then((peaks) => {
-      if (peaks.length) waveformCache.set(key, peaks);
-      return peaks;
+    .then((result) => {
+      if (result.peaks.length) waveformCache.set(key, result);
+      return result;
     })
     .finally(() => waveformInFlight.delete(key));
 
@@ -96,7 +195,9 @@ function extractPeaks(url: string): Promise<number[]> {
 }
 
 /**
- * GET /api/waveform?url=...  → { peaks: number[] } amplitude buckets (0..1) for an audio clip.
+ * GET /api/waveform?url=...  → { peaks: number[], durationSeconds: number } amplitude buckets
+ * (0..1) spanning the whole source, plus how many seconds they cover so a trimmed clip can index
+ * into them.
  */
 export async function requestWaveform(req: Request, res: Response): Promise<void> {
   const url = String((req.query.url ?? req.body?.url) || '');
@@ -105,11 +206,95 @@ export async function requestWaveform(req: Request, res: Response): Promise<void
     return;
   }
   try {
-    const peaks = await extractPeaks(url);
-    res.json({ success: true, data: { peaks } });
+    const { peaks, durationSeconds } = await extractPeaks(url);
+    res.json({ success: true, data: { peaks, durationSeconds } });
   } catch (e) {
     logger.error('waveform extraction failed', e as Error);
     res.status(500).json({ success: false, error: e instanceof Error ? e.message : 'waveform failed' });
+  }
+}
+
+// --- Source timecode ---------------------------------------------------------------------------
+
+const FFPROBE = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const probe = require('ffprobe-static');
+    return (probe?.path as string) || 'ffprobe';
+  } catch {
+    return 'ffprobe';
+  }
+})();
+
+const timecodeCache = new Map<string, string | null>();
+
+/**
+ * GET /api/source-timecode?url=...  → { timecode: "HH:MM:SS:FF" | null }
+ *
+ * Reads a file's embedded QuickTime `tmcd` track. Emerald's clip export writes one (see
+ * clipExportService.js), which is what lets an exported file land on the timeline at the
+ * timecode it was captured at rather than wherever it happened to be dropped.
+ *
+ * Null — not an error — when the file has no timecode track. Plenty of sources legitimately
+ * don't, and the caller falls back to the drop position for those.
+ */
+export async function requestSourceTimecode(req: Request, res: Response): Promise<void> {
+  const url = String(req.query.url ?? '');
+  if (!/^https?:\/\//i.test(url)) {
+    res.status(400).json({ success: false, error: 'A source url is required' });
+    return;
+  }
+
+  const key = keyFor(url);
+  if (timecodeCache.has(key)) {
+    res.json({ success: true, data: { timecode: timecodeCache.get(key) ?? null } });
+    return;
+  }
+
+  const source = resolveReadableSource(url);
+
+  try {
+    const timecode = await new Promise<string | null>((resolve, reject) => {
+      const args = [
+        '-v', 'error',
+        // The tmcd track surfaces as a stream tag; some muxers also put it on the container, so
+        // both are asked for and whichever is present wins.
+        '-show_entries', 'format_tags=timecode:stream_tags=timecode',
+        '-of', 'json',
+        source,
+      ];
+      const proc = spawn(FFPROBE, args, { windowsHide: true });
+      let out = '';
+      let err = '';
+      const timer = setTimeout(() => { try { proc.kill(); } catch { /* gone */ } }, 20_000);
+
+      proc.stdout.on('data', (d) => (out += d.toString()));
+      proc.stderr.on('data', (d) => (err += d.toString()));
+      proc.on('error', (e) => { clearTimeout(timer); reject(e); });
+      proc.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code !== 0) return reject(new Error(err.slice(-300) || `ffprobe exited ${code}`));
+
+        try {
+          const parsed = JSON.parse(out || '{}');
+          const fromStream = (parsed.streams || [])
+            .map((s: { tags?: { timecode?: string } }) => s?.tags?.timecode)
+            .find((tc: string | undefined) => typeof tc === 'string' && /^\d{2}:\d{2}:\d{2}[:;]\d{2}$/.test(tc));
+          const fromFormat = parsed.format?.tags?.timecode;
+          resolve(fromStream || (typeof fromFormat === 'string' ? fromFormat : null));
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+
+    timecodeCache.set(key, timecode);
+    res.json({ success: true, data: { timecode } });
+  } catch (e) {
+    logger.warn(`source timecode read failed for ${source}: ${e instanceof Error ? e.message : String(e)}`);
+    // Not a 500: an unreadable timecode is a normal outcome for many sources, and the caller
+    // simply falls back to the drop position.
+    res.json({ success: true, data: { timecode: null } });
   }
 }
 

@@ -7,3 +7,9 @@ import fs from 'node:fs';
 // hand the frontend a local URL or the Emerald backend's HTTP one).
 export const LOCAL_RECORDINGS_PATH = process.env.EMERALD_RECORDINGS_PATH || null;
 export const LOCAL_RECORDINGS_AVAILABLE = Boolean(LOCAL_RECORDINGS_PATH && fs.existsSync(LOCAL_RECORDINGS_PATH));
+
+// Emerald's Exports folder (clip exports joined from the Media Browser). Same local-disk
+// shortcut as LOCAL_RECORDINGS_PATH above and same fallback: unset, or pointing somewhere that
+// doesn't exist, means those files are fetched over HTTP like any other source.
+export const LOCAL_EXPORTS_PATH = process.env.EMERALD_EXPORTS_PATH || null;
+export const LOCAL_EXPORTS_AVAILABLE = Boolean(LOCAL_EXPORTS_PATH && fs.existsSync(LOCAL_EXPORTS_PATH));
