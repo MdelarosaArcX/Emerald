@@ -15,12 +15,16 @@ const BUFFER_CLEAR_RATIO = 0.6;
 // "what was the on-air delay at 3:45pm"). Appends newline-delimited JSON so it's trivial to tail
 // or parse later, plus a compact one-line console summary for live viewing.
 class TimecodeLogService {
-  constructor(deltacastTx, options = {}) {
+  constructor(deltacastTx, timecodeMaster, options = {}) {
     this.deltacastTx = deltacastTx;
+    this.timecodeMaster = timecodeMaster;
     this.intervalMs = options.intervalMs || Number(process.env.TIMECODE_LOG_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
     this.logPath = options.logPath || path.join(__dirname, "..", "logs", "timecode.log");
-    this.fps = options.fps || 25;
     this.handle = null;
+    // Tracks the generator lock so losing (or regaining) it lands in the Capture Logs event log
+    // as a discrete event, not just as a changed field on every one of these 1 Hz entries. A
+    // recording made while the generator was down is worth being able to find afterwards.
+    this.lastLockState = null;
     // State for the transition-detection watchers below — these live here (not in
     // DeltacastCaptureService) since Node already polls captureStatus() every tick and this is
     // the one place both the Capture Logs event log and that status are both in scope.
@@ -45,7 +49,9 @@ class TimecodeLogService {
   }
 
   async tick() {
-    const now = new Date();
+    // The generator's clock, so this log and /api/capture/timecode can never disagree about what
+    // the timecode was at a given instant — they now read the same corrected clock.
+    const now = this.timecodeMaster.currentDate();
     const [captureStatus, txStatus] = await Promise.all([
       this.deltacastTx.captureStatus().catch(() => null),
       this.deltacastTx.status().catch(() => null),
@@ -60,6 +66,9 @@ class TimecodeLogService {
       this.detectBufferUsage(captureStatus);
     }
 
+    const timecodeStatus = this.timecodeMaster.status;
+    this.detectLockTransition(timecodeStatus);
+
     const delaySecondsSince = (lastFrameAt) => {
       if (!lastFrameAt) return null;
       return Math.max(0, (now.getTime() - new Date(lastFrameAt).getTime()) / 1000);
@@ -67,7 +76,12 @@ class TimecodeLogService {
 
     const entry = {
       timestamp: now.toISOString(),
-      timecode: formatWallClockTimecode(now, this.fps),
+      timecode: this.timecodeMaster.timecodeAt(now),
+      // Recorded per entry so this log answers "was the timecode real at 3:45pm?", not just
+      // "what did we think it was" — the whole point of a gap-free audit record.
+      timecodeSource: timecodeStatus.source,
+      timecodeLockState: timecodeStatus.lockState,
+      timecodeOffsetMs: timecodeStatus.offsetMs,
       capture: {
         isCapturing: Boolean(captureStatus?.isCapturing),
         framesReceived: captureStatus?.framesReceived ?? 0,
@@ -89,9 +103,33 @@ class TimecodeLogService {
     }
 
     console.log(
-      `[timecode] ${entry.timecode} capture=${entry.capture.isCapturing ? `on(${entry.capture.delaySeconds?.toFixed(2)}s)` : "off"} `
+      `[timecode] ${entry.timecode} (${entry.timecodeLockState}) `
+      + `capture=${entry.capture.isCapturing ? `on(${entry.capture.delaySeconds?.toFixed(2)}s)` : "off"} `
       + `onAir=${entry.onAir.isTransmitting ? `on(${entry.onAir.delaySeconds?.toFixed(2)}s)` : "off"}`,
     );
+  }
+
+  detectLockTransition(timecodeStatus) {
+    const state = timecodeStatus.lockState;
+    if (state === this.lastLockState) return;
+
+    // Skip the very first observation: at boot the service simply hasn't synced yet, and
+    // announcing "generator lost" for a generator that was never claimed would be noise.
+    if (this.lastLockState !== null) {
+      if (state === "LOCKED") {
+        logEvent(`Timecode generator locked (offset ${timecodeStatus.offsetMs}ms).`, "info", "Timecode");
+      } else if (state === "MISMATCH") {
+        logEvent(
+          `Timecode generator disagrees by ${timecodeStatus.driftFrames} frames — check that both machines share a timezone.`,
+          "warn",
+          "Timecode",
+        );
+      } else {
+        logEvent(`Timecode generator unreachable — falling back to local clock. ${timecodeStatus.lastError ?? ""}`.trim(), "warn", "Timecode");
+      }
+    }
+
+    this.lastLockState = state;
   }
 
   // Only one embedded-audio stereo pair is ever wired up on the capture side (see
@@ -127,12 +165,6 @@ class TimecodeLogService {
       this.bufferWarnActive = false;
     }
   }
-}
-
-function formatWallClockTimecode(date, fps) {
-  const pad = (value) => String(Math.trunc(value)).padStart(2, "0");
-  const frames = Math.floor((date.getMilliseconds() / 1000) * fps);
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
 }
 
 module.exports = {

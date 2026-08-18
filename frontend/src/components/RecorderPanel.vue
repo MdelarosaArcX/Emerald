@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, onMounted, onUnmounted, watch } from "vue";
 import { useRecorderStore } from "../stores/recorder";
+import { useAudioCalibrationStore } from "../stores/audioCalibration";
+import { useCaptureHealthStore } from "../stores/captureHealth";
 
 const recorder = useRecorderStore();
+const audioCalibration = useAudioCalibrationStore();
+const captureHealth = useCaptureHealthStore();
 
 const activeStreams = computed(() => recorder.ingestStatus?.activeStreams.join(", ") || "None");
 const recordingCount = computed(() => recorder.recordings.length);
@@ -24,6 +28,45 @@ watch(
   () => recorder.saveSettings(),
   { deep: true }
 );
+
+// The frame base the calibration's frame readout is counted in — the generator's when we're
+// locked to it, since that's what the timecode is counted in too.
+const calibrationFps = computed(() =>
+  Math.max(1, captureHealth.data?.timecodeSource?.frameRate || Number(recorder.settings.fps) || 25),
+);
+const msPerFrame = computed(() => 1000 / calibrationFps.value);
+const audioOffsetFramesLabel = computed(() => {
+  const frames = audioCalibration.offsetMs / msPerFrame.value;
+  // Two decimals: sub-frame corrections are the common case, and rounding to whole frames would
+  // make most real settings display as "0 frames" while the ms field clearly says otherwise.
+  return `${frames >= 0 ? "+" : ""}${frames.toFixed(2)} f`;
+});
+
+const audioOffsetMs = computed({
+  get: () => audioCalibration.offsetMs,
+  set: (value: number | string) => {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) audioCalibration.set(parsed);
+  },
+});
+
+// Positive delays audio relative to video, so "audio is early, push it later" is the + direction.
+function stepAudioOffset(frames: number) {
+  audioCalibration.set(audioCalibration.offsetMs + frames * msPerFrame.value);
+}
+
+let calibrationHandle: number | null = null;
+
+onMounted(() => {
+  audioCalibration.refresh();
+  // Slow poll: this value only changes when someone changes it, but the capture service can
+  // restart underneath us and the control needs to notice it came back.
+  calibrationHandle = window.setInterval(() => audioCalibration.refresh(), 5000);
+});
+
+onUnmounted(() => {
+  if (calibrationHandle) window.clearInterval(calibrationHandle);
+});
 
 function formatTimecode(totalSeconds: number) {
   const seconds = Math.max(0, Number(totalSeconds) || 0);
@@ -70,6 +113,54 @@ function pad(value: number) {
         <span>Broadcast Delay</span>
         <input v-model="broadcastDelayTimecode" class="compact-input" inputmode="numeric" />
       </label>
+
+      <!-- Lip-sync calibration. Applies to the live preview within about a second so it can be
+           tuned by eye; a running recording keeps the value it started with. -->
+      <div
+        class="field-row field-wide audio-sync-row"
+        :class="{ disabled: !audioCalibration.available }"
+        :title="audioCalibration.available
+          ? 'Shifts audio relative to video. Positive delays audio, negative advances it. Takes effect on the live preview within about a second; a recording already running keeps the value it started with.'
+          : 'DeltacastCaptureService is unreachable — audio calibration unavailable.'"
+      >
+        <span>Audio Sync</span>
+        <span class="audio-sync-controls">
+          <button
+            type="button"
+            class="audio-sync-step"
+            :disabled="!audioCalibration.available"
+            title="One frame earlier"
+            @click="stepAudioOffset(-1)"
+          >−</button>
+          <input
+            v-model.number="audioOffsetMs"
+            class="compact-input audio-sync-input"
+            type="number"
+            step="1"
+            inputmode="numeric"
+            :disabled="!audioCalibration.available"
+          />
+          <span class="audio-sync-unit">ms</span>
+          <button
+            type="button"
+            class="audio-sync-step"
+            :disabled="!audioCalibration.available"
+            title="One frame later"
+            @click="stepAudioOffset(1)"
+          >+</button>
+          <span class="audio-sync-frames">{{ audioOffsetFramesLabel }}</span>
+          <!-- Applying the value restarts the preview encoder, so the picture hitches for a
+               moment. Saying so turns an unexplained glitch into expected feedback. -->
+          <span v-if="audioCalibration.saving" class="audio-sync-applying">re-syncing…</span>
+          <button
+            type="button"
+            class="audio-sync-step audio-sync-reset"
+            :disabled="!audioCalibration.available || audioCalibration.offsetMs === 0"
+            title="Reset to zero"
+            @click="audioCalibration.set(0)"
+          >0</button>
+        </span>
+      </div>
 
       <label class="field-row">
         <span>FPS</span>

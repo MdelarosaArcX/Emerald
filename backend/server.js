@@ -11,7 +11,9 @@ const multipart = require("@fastify/multipart");
 const fastifyStatic = require("@fastify/static");
 
 const { normalizeFfmpegPath } = require("./services/obsRecordingService");
-const { ObsIngestService, TX_LIVE_PLAYLIST_NAME, startOrphanTxPlaylistWatcher } = require("./services/obsIngestService");
+const { ObsIngestService, TX_LIVE_PLAYLIST_NAME, startOrphanTxPlaylistWatcher, resolveBackupDir } = require("./services/obsIngestService");
+const { StorageQuotaWatchdog } = require("./services/storageQuotaWatchdog");
+const { ClipExportService } = require("./services/clipExportService");
 const { EditCaptureService, MASTER_PATTERN: EDIT_CAPTURE_MASTER_PATTERN } = require("./services/editCaptureService");
 const { RtmpIngestService } = require("./services/rtmpIngestService");
 const { RtmpOutService } = require("./services/rtmpOutService");
@@ -20,8 +22,8 @@ const { probeObsStream } = require("./services/obsStreamProbeService");
 const { runtimeServices } = require("./services/runtimeServices");
 const { DeltacastTxService } = require("./services/deltacastTxService");
 const { TimecodeLogService } = require("./services/timecodeLogService");
+const { TimecodeMasterService } = require("./services/timecodeMasterService");
 const { logEvent, readRecentEvents } = require("./services/eventLogService");
-const { formatWallClockTimecode } = require("./services/timecodeFormat");
 const { probeSegment, mapWithConcurrency } = require("./services/segmentProbeService");
 
 // Ceiling on concurrent ffprobe child processes per segment-listing request. A long session
@@ -57,6 +59,14 @@ const rtmpIngest = new RtmpIngestService();
 const rtmpOut = new RtmpOutService();
 const webrtcPreview = new WebrtcPreviewService();
 const deltacastTx = new DeltacastTxService();
+// Joins selected Media Browser clips into one timecoded file. Lives beside the recordings rather
+// than inside them so exports are never mistaken for capture output by the quota watchdog or the
+// segment reconciler.
+const exportsPath = process.env.EMERALD_EXPORTS_PATH
+  ? path.resolve(process.env.EMERALD_EXPORTS_PATH)
+  : path.join(contentRoot, "Exports");
+fs.mkdirSync(exportsPath, { recursive: true });
+const clipExport = new ClipExportService(recordingsPath, exportsPath);
 rtmpIngest.start();
 
 // DeltacastSdkService's RX3 capture loop runs continuously for this whole C# process's lifetime
@@ -79,8 +89,31 @@ let sessionFrameBaseline = null;
 // starts/stops — this is just the static WHEP URL for it.
 const onAirPreviewWhepUrl = `http://${process.env.MEDIAMTX_PUBLIC_HOST || "127.0.0.1"}:${Number(process.env.MEDIAMTX_WHEP_PORT || 8889)}/live/onair/whep`;
 
-const timecodeLog = new TimecodeLogService(deltacastTx);
+// The single source of timecode for the whole backend. Measures this machine's clock offset
+// against the Timecode System generator every couple of seconds, after which every timecode read
+// is local arithmetic — see the header comment in timecodeMasterService.js for why it isn't
+// polled per frame. Everything that used to format Node's own wall clock and call the result
+// "timecode" now reads from here, so what Emerald displays and stores is the generator's timecode
+// rather than an independently drifting guess.
+const timecodeMaster = new TimecodeMasterService();
+timecodeMaster.start();
+obsIngest.timecodeMaster = timecodeMaster;
+editCapture.timecodeMaster = timecodeMaster;
+
+const timecodeLog = new TimecodeLogService(deltacastTx, timecodeMaster);
 timecodeLog.start();
+
+// Enforces RECORDING_SIZE_LIMIT and STORAGE_SIZE_LIMIT continuously, not just while a recording
+// is running. ObsIngestService's own maintenance tick still handles the in-session case (it is
+// the only thing that knows which segment ffmpeg currently has open); this covers the idle
+// periods that tick never reached, which is how the backup volume ended up holding more than
+// twice its configured limit.
+const storageQuotaWatchdog = new StorageQuotaWatchdog({
+  recordingsPath,
+  getActiveSessionFolder: () => (obsIngest.recordingStatus.isRecording ? obsIngest.sessionFolderName : null),
+  getBackupDir: () => resolveBackupDir().backupDir,
+});
+storageQuotaWatchdog.start();
 
 // MediaMTX previously only ever started lazily, the first time someone clicked "Start" on the
 // Capture page's own preview (webrtcPreview.start() below calls ensureMediaMtxRunning() itself).
@@ -133,6 +166,11 @@ async function registerPlugins(server) {
   await server.register(fastifyStatic, {
     root: recordingsPath,
     prefix: "/recordings/",
+    decorateReply: false,
+  });
+  await server.register(fastifyStatic, {
+    root: exportsPath,
+    prefix: "/exports/",
     decorateReply: false,
   });
   await server.register(fastifyStatic, {
@@ -268,6 +306,51 @@ function registerRoutes(server) {
       .sort((a, b) => b.lastWriteTime - a.lastWriteTime)
       .slice(0, 100)
       .map(({ lastWriteTime, ...file }) => file);
+  });
+
+  // Joins several selected Media Browser clips into one file carrying a SMPTE start timecode.
+  // Stream-copied, so this is near-instant even for a long selection.
+  server.post("/api/recordings/export", async (request, reply) => {
+    try {
+      const result = await clipExport.export(request.body || {});
+      logEvent(
+        `Exported ${result.clipCount} clip${result.clipCount === 1 ? "" : "s"} to ${result.fileName} @ ${result.startTimecode}`,
+        "info",
+        "Export",
+      );
+      return result;
+    } catch (error) {
+      return reply.code(400).send({ message: error.message });
+    }
+  });
+
+  server.get("/api/recordings/exports", async () => clipExport.list());
+
+  // Start timecode the export dialog prefills with: the earliest selected clip's real recorded
+  // timecode, taken from the database rather than recomputed, so the export inherits exactly the
+  // timecode that was stored when that segment was captured.
+  server.get("/api/recordings/start-timecode", async (request, reply) => {
+    const sessionFolder = path.basename(String(request.query.sessionFolder || ""));
+    const fileName = path.basename(String(request.query.fileName || ""));
+    if (!sessionFolder || !fileName) {
+      return reply.code(400).send({ message: "sessionFolder and fileName are required." });
+    }
+
+    const session = await db.getSessionWithSegments(sessionFolder).catch(() => null);
+    const frameRate = session?.frameRate || timecodeMaster.frameRate;
+
+    // Segments are stored by their .mov name; the browser lists the .mp4 of the same index.
+    const movName = fileName.replace(/\.mp4$/i, ".mov");
+    const segment = session?.segments?.find((row) => row.movFileName === movName);
+
+    return {
+      // Falls back to the session's own start when the segment predates per-segment timecodes,
+      // and to null when nothing is known — the dialog then asks the operator to type one rather
+      // than inventing a plausible-looking value.
+      startTimecode: segment?.startTimecode || session?.startTimecode || null,
+      frameRate,
+      timecodeSource: session?.timecodeSource ?? null,
+    };
   });
 
   server.get("/api/obs-recordings/:folder/:fileName/thumbnail", async (request, reply) => {
@@ -484,7 +567,14 @@ function registerRoutes(server) {
       return reply.code(400).send({ message: localInputError });
     }
 
-    const { recordingStatus } = await obsIngest.start(request.body || {});
+    // Recorded alongside the session so a sync question months later can be answered against the
+    // value that was actually in force. Best-effort: an unreachable capture service must not stop
+    // a recording from starting, so a failure here just leaves the column null ("unknown").
+    const audioOffsetMs = await deltacastTx.audioCalibration()
+      .then((result) => result?.offsetMs ?? null)
+      .catch(() => null);
+
+    const { recordingStatus } = await obsIngest.start({ ...(request.body || {}), audioOffsetMs });
     sessionFrameBaseline = await deltacastTx.captureStatus()
       .then((status) => ({ framesReceived: status?.framesReceived ?? 0, framesDropped: status?.framesDropped ?? 0 }))
       .catch(() => ({ framesReceived: 0, framesDropped: 0 }));
@@ -558,9 +648,54 @@ function registerRoutes(server) {
   // — a real, hardware-driven staleness signal (near 0 when healthy, growing if signal/output is
   // lost), not a measure of encode/network/buffering latency, which isn't independently
   // instrumented — that's what broadcastDelaySeconds/onAirTimecode is for.
+  // Operator lip-sync calibration. Proxied straight through to DeltacastCaptureService, which
+  // holds the value and applies it — Node keeps no copy of its own, so there is one source of
+  // truth and no chance of the UI showing a number the ffmpeg legs aren't actually using.
+  server.get("/api/audio-calibration", async (request, reply) => {
+    try {
+      return await deltacastTx.audioCalibration();
+    } catch (error) {
+      return reply.code(503).send({ message: error.message });
+    }
+  });
+
+  server.post("/api/audio-calibration", async (request, reply) => {
+    const offsetMs = Number(request.body?.offsetMs);
+    if (!Number.isFinite(offsetMs)) {
+      return reply.code(400).send({ message: "offsetMs must be a number." });
+    }
+
+    try {
+      const result = await deltacastTx.setAudioCalibration(offsetMs);
+      logEvent(`Audio calibration set to ${result.offsetMs}ms.`, "info", "Audio");
+      return result;
+    } catch (error) {
+      return reply.code(503).send({ message: error.message });
+    }
+  });
+
+  // Diagnostics: the generator's own view of itself and of every reader synced to it, alongside
+  // our measured offset. Deliberately separate from /api/capture/timecode — that one has to stay
+  // fast and local because the UI polls it continuously, whereas this one hits the generator over
+  // the network and is only opened when someone is investigating a sync problem.
+  server.get("/api/timecode/master", async () => {
+    const snapshot = await timecodeMaster.masterSnapshot();
+    return {
+      emerald: timecodeMaster.status,
+      // What we compute versus what the generator says at (as close as possible to) the same
+      // instant — the two should never differ by more than a frame.
+      emeraldTimecode: timecodeMaster.currentTimecode(),
+      master: snapshot.timecode,
+      readers: snapshot.readers,
+    };
+  });
+
   server.get("/api/capture/timecode", async () => {
-    const now = new Date();
-    const fps = 25;
+    // "Now" on the generator's clock, and the generator's own frame rate — not this process's
+    // wall clock and not a hardcoded 25. When the generator is unreachable this degrades to the
+    // local clock, but says so via timecodeSource.lockState rather than pretending.
+    const now = timecodeMaster.currentDate();
+    const fps = timecodeMaster.frameRate;
 
     const [captureStatus, txStatus] = await Promise.all([
       deltacastTx.captureStatus().catch(() => null),
@@ -598,12 +733,19 @@ function registerRoutes(server) {
       txStatus.sourceUrl.endsWith(TX_LIVE_PLAYLIST_NAME)
     );
     const onAirDelaySeconds = isOnAirFromCurrentSessionLiveDelay ? broadcastDelaySeconds : 0;
-    const onAirTimecode = formatWallClockTimecode(new Date(now.getTime() - onAirDelaySeconds * 1000), fps);
+    const onAirTimecode = timecodeMaster.timecodeAt(new Date(now.getTime() - onAirDelaySeconds * 1000));
 
     return {
-      timecode: formatWallClockTimecode(now, fps),
+      timecode: timecodeMaster.timecodeAt(now),
       timestamp: now.toISOString(),
       fps,
+      // Where this timecode actually came from: "master" with lockState LOCKED means it is the
+      // generator's; "wallclock"/FREE_RUN means the generator was unreachable and this is the
+      // local clock standing in; MISMATCH means the generator answered but its timecode disagrees
+      // with ours by more than a frame, which in practice means the two machines' local clocks are
+      // in different timezones. The UI shows this so an operator can tell a real timecode from a
+      // fallback at a glance.
+      timecodeSource: timecodeMaster.status,
       capture: {
         isCapturing: Boolean(captureStatus?.isCapturing),
         startedAt: captureStatus?.startedAt ?? null,
@@ -691,7 +833,7 @@ function registerRoutes(server) {
         if (!wasAlreadyTransmitting) {
           db.recordOnAirStart({
             startedAt: new Date(),
-            startTimecode: formatWallClockTimecode(new Date(), 25),
+            startTimecode: timecodeMaster.currentTimecode(),
             sourceType: "clip",
             sourceFolder: folder,
             sourceFile: requestedFileName,
@@ -728,7 +870,7 @@ function registerRoutes(server) {
         if (!wasAlreadyTransmitting) {
           db.recordOnAirStart({
             startedAt: new Date(),
-            startTimecode: formatWallClockTimecode(new Date(), 25),
+            startTimecode: timecodeMaster.currentTimecode(),
             sourceType: "live",
             sourceFolder: folder,
             broadcastDelaySeconds: obsIngest.recordingStatus.broadcastDelaySeconds ?? null,
@@ -767,7 +909,7 @@ function registerRoutes(server) {
       if (!wasAlreadyTransmitting) {
         db.recordOnAirStart({
           startedAt: new Date(),
-          startTimecode: formatWallClockTimecode(new Date(), 25),
+          startTimecode: timecodeMaster.currentTimecode(),
           sourceType: "finished-session",
           sourceFolder: folder,
         }).catch((error) => app.log.error(error, "Failed to record on-air event"));

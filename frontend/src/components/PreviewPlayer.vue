@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import settingsIcon from "../assets/icons/settings.png";
+import { useMonitorAudio } from "../composables/useMonitorAudio";
 
 const props = defineProps<{
   src: string;
@@ -45,6 +46,19 @@ const internalTimecode = ref("00:00:00:00");
 // publisher never sends real audio (e.g. before the SDI audio pipeline exists at all), so
 // presence has to be measured from live stats, not inferred from the SDP.
 const audioDetected = ref(false);
+
+// Monitor audio. The <video> below stays muted in markup so it can autoplay; this drives the
+// element's muted/volume *properties* after the operator clicks the speaker, which is the user
+// gesture browsers require before letting media make sound.
+// Distinct owners per variant: the library player plays back recorded files while the capture
+// player carries the live feed, and an operator switching between them expects each to remember
+// whether it was the one they were listening to.
+const monitorAudio = useMonitorAudio(`preview-${props.variant || "library"}`);
+const audible = computed(() => monitorAudio.enabled.value && monitorAudio.isOwner.value);
+
+// Re-applied on every change and whenever playback (re)starts, because a reconnect replaces the
+// srcObject and a fresh stream comes back muted by default.
+watch([audible, monitorAudio.volume, video], () => monitorAudio.apply(video.value));
 
 let pc: RTCPeerConnection | null = null;
 let webrtcSessionUrl: string | null = null;
@@ -349,6 +363,9 @@ function stopStallWatchdog() {
 function onPlaying() {
   hasPlayback.value = true;
   isPaused.value = false;
+  // A reconnect hands the element a brand new MediaStream, which arrives muted — reassert the
+  // operator's choice so audio doesn't silently drop out after a blip.
+  monitorAudio.apply(video.value);
   startTimecodeLoop();
 }
 
@@ -434,6 +451,30 @@ function togglePlayback() {
       <span v-if="isCapture && hasPlayback" class="audio-indicator" :class="{ active: audioDetected }" :title="audioDetected ? 'Receiving audio' : 'No audio detected'">
         <i></i> {{ audioDetected ? "Audio" : "No Audio" }}
       </span>
+      <!-- Monitor audio. Separate from the indicator above: that reports whether audio is
+           arriving, this decides whether it is played out of the speakers. -->
+      <button
+        type="button"
+        class="monitor-audio"
+        :class="{ on: audible }"
+        :disabled="!hasPlayback"
+        :aria-pressed="audible"
+        :title="audible
+          ? `Monitoring audio (${Math.round(monitorAudio.volume.value * 100)}%) — click to mute`
+          : 'Listen to this source'"
+        @click="monitorAudio.toggle()"
+      >{{ audible ? "🔊" : "🔇" }}</button>
+      <input
+        v-if="audible"
+        v-model.number="monitorAudio.volume.value"
+        class="monitor-volume"
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        aria-label="Monitor volume"
+        :title="`Monitor volume ${Math.round(monitorAudio.volume.value * 100)}%`"
+      />
       <button
         type="button"
         class="pause active"

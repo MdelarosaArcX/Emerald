@@ -82,12 +82,19 @@ export async function fetchRecordingSessions(): Promise<RecordingSession[]> {
 }
 
 /**
- * Resolves which recording session folder to fall back to when no folder has been picked:
- * whichever session Emerald is actively recording into, or the most recently created one.
+ * The session Emerald is actively recording into, or the most recently created one when nothing is
+ * recording. The live fallback matters for the timeline's live sync: the session that just stopped
+ * is still the one that was last on air, so it stays loaded rather than the timeline emptying the
+ * moment a recording ends.
  */
-async function fetchActiveOrLatestSessionFolder(): Promise<string | null> {
+export async function fetchActiveOrLatestSession(): Promise<RecordingSession | null> {
   const sessions = await fetchRecordingSessions();
-  return sessions.find((session) => session.isActive)?.folder ?? sessions[0]?.folder ?? null;
+  return sessions.find((session) => session.isActive) ?? sessions[0] ?? null;
+}
+
+/** Just the folder name — the common case for callers that only need somewhere to list from. */
+async function fetchActiveOrLatestSessionFolder(): Promise<string | null> {
+  return (await fetchActiveOrLatestSession())?.folder ?? null;
 }
 
 /**
@@ -119,9 +126,30 @@ export async function fetchRecordedClips(): Promise<RecordedClip[]> {
 }
 
 export interface EmeraldTimecode {
+  /** Live wall-clock timecode from Emerald's master generator, HH:MM:SS:FF local time of day. */
   timecode: string;
+  /**
+   * The Emerald backend's own "now" for this response. Paired with onAir.startedAt to measure how
+   * long TX has been up as a duration on a single machine's clock — LiveEdit's own clock is never
+   * involved, so a workstation whose time is a few seconds off doesn't skew where on air began.
+   */
+  timestamp: string;
+  /** The generator's frame rate. Read rather than assumed — see useTimecode on why that matters. */
+  fps: number;
   capture: { isCapturing: boolean };
-  onAir: { isTransmitting: boolean; timecode: string; broadcastDelaySeconds: number };
+  onAir: {
+    isTransmitting: boolean;
+    /** ISO instant TX went live; null when off air. */
+    startedAt: string | null;
+    /**
+     * Timecode of the material actually going out right now. Not the same as `timecode` above: a
+     * broadcast-delayed live feed is transmitting footage captured broadcastDelaySeconds ago, so
+     * this is offset backward by that much (see the /api/capture/timecode comment in Emerald's
+     * server.js). This is the one to line a timeline up against.
+     */
+    timecode: string;
+    broadcastDelaySeconds: number;
+  };
 }
 
 export async function fetchEmeraldTimecode(): Promise<EmeraldTimecode | null> {

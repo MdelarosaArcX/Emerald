@@ -49,6 +49,17 @@ const audioDroppedLabel = computed(() => {
   return String(capture.framesDropped);
 });
 
+// "Gen" rather than "Locked" for the healthy case: the panel already has a "Tidal Lock" column
+// and a row of up/down dots, so a second thing shouting LOCKED reads as if it's about the same
+// subject. This one is specifically about the timecode generator.
+const timecodeLockLabel = computed(() => {
+  switch (captureHealth.timecodeLockState) {
+    case "LOCKED": return "Gen";
+    case "MISMATCH": return "TZ mismatch";
+    default: return "Free run";
+  }
+});
+
 let healthHandle: number | null = null;
 let dbHandle: number | null = null;
 
@@ -92,6 +103,18 @@ onUnmounted(() => {
       <div class="status-band-col status-band-col-end">
         <h3 class="status-title">Timecode</h3>
         <span class="status-timecode">{{ captureHealth.data?.timecode || "--:--:--:--" }}</span>
+        <!-- Whether that number is the generator's or a local stand-in. Without this a FREE_RUN
+             fallback is indistinguishable from a real lock, and an operator would only find out
+             the recordings were stamped from the wrong clock afterwards. -->
+        <span
+          v-if="captureHealth.timecodeLockState"
+          class="status-chip timecode-lock"
+          :class="captureHealth.timecodeLockState.toLowerCase()"
+          :title="captureHealth.timecodeLockDetail"
+        >
+          <i class="status-dot" :class="captureHealth.timecodeIsLocked ? 'up' : 'down'"></i>
+          {{ timecodeLockLabel }}
+        </span>
       </div>
     </div>
 

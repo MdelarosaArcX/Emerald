@@ -28,11 +28,22 @@ class EditCaptureService {
     this.sessionFolderName = null;
     this.dbSessionId = null;
     this.dbKnownSegments = new Set();
-    this.dbFrameRate = 25;
     this.segmentSeconds = 120;
 
     this.maintenanceHandle = null;
     this.maintenanceStopped = true;
+  }
+
+  // The generator's frame rate, or 25 when no generator client is wired in (tests, standalone
+  // construction) — server.js assigns this.timecodeMaster at boot.
+  get dbFrameRate() {
+    return this.timecodeMaster ? this.timecodeMaster.frameRate : 25;
+  }
+
+  currentTimecode() {
+    return this.timecodeMaster
+      ? this.timecodeMaster.currentTimecode()
+      : formatWallClockTimecode(new Date(), 25);
   }
 
   async start(request = {}) {
@@ -46,7 +57,18 @@ class EditCaptureService {
     const sessionFolderName = createSessionFolder(this.editCapturePath, "editcapture", new Date());
     const outputDirectory = path.join(this.editCapturePath, sessionFolderName);
 
-    const status = await this.request("POST", "/edit-capture/start", { outputDirectory, segmentSeconds, enableAudio });
+    // C# formats the actual start timecode itself, at the instant it spawns ffmpeg — it just
+    // needs our measured offset to the generator and the generator's frame rate to do it. Doing
+    // it there rather than sending a finished timecode from here removes the HTTP round trip and
+    // process-startup gap, which at 25fps is otherwise a one-to-two frame error in a stamp whose
+    // whole purpose is frame accuracy. See TimecodeStamp.cs.
+    const status = await this.request("POST", "/edit-capture/start", {
+      outputDirectory,
+      segmentSeconds,
+      enableAudio,
+      masterClockOffsetMs: this.timecodeMaster ? this.timecodeMaster.offsetMs : 0,
+      frameRate: this.dbFrameRate,
+    });
 
     this.sessionFolderName = sessionFolderName;
     this.dbSessionId = null;
@@ -56,7 +78,14 @@ class EditCaptureService {
     db.recordEditCaptureSessionStart({
       folderName: sessionFolderName,
       startedAt: new Date(),
-      startTimecode: formatWallClockTimecode(new Date(), this.dbFrameRate),
+      // Whatever C# actually wrote into the files, echoed back in its start response, rather than
+      // a second reading taken here a round trip later — the DB and the tmcd/BWF stamps have to
+      // agree to be worth anything. Falls back to a local reading only if the C# service is old
+      // enough not to report it.
+      startTimecode: status?.startTimecode || this.currentTimecode(),
+      timecodeSource: this.timecodeMaster ? this.timecodeMaster.status.source : "wallclock",
+      audioFileName: status?.audioFileName ?? null,
+      audioOffsetMs: status?.audioOffsetMs ?? null,
       frameRate: this.dbFrameRate,
       segmentSeconds,
       videoCodec: "rawvideo",
@@ -191,8 +220,12 @@ class EditCaptureService {
       // Derived from the segment file's own birthtime, not sessionStart + index*segmentSeconds
       // arithmetic — -use_wallclock_as_timestamps on the C# side is specifically what keeps
       // segment boundaries tracking true elapsed wall-clock time even under upstream frame
-      // drops, and arithmetic reconstruction here would throw that away.
-      const startTimecode = formatWallClockTimecode(movStat.birthtime, this.dbFrameRate);
+      // drops, and arithmetic reconstruction here would throw that away. birthtime is stamped by
+      // this machine's clock, so it goes through timecodeAtLocalInstant to be expressed on the
+      // generator's.
+      const startTimecode = this.timecodeMaster
+        ? this.timecodeMaster.timecodeAtLocalInstant(movStat.birthtime)
+        : formatWallClockTimecode(movStat.birthtime, this.dbFrameRate);
 
       let saved;
       try {

@@ -5,10 +5,12 @@
  * and scrub cursor into one horizontally/vertically scrollable view.
  */
 import TimelineCursor from '@/components/timeline/TimelineCursor.vue';
+import TimelineOnAirRegion from '@/components/timeline/TimelineOnAirRegion.vue';
 import TimelinePlayhead from '@/components/timeline/TimelinePlayhead.vue';
 import TimelineRuler from '@/components/timeline/TimelineRuler.vue';
 import TimelineTrack from '@/components/timeline/TimelineTrack.vue';
 import { renderSequence } from '@/services/render';
+import { useOnAirStore } from '@/stores/onAirStore';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useTimecode } from '@/composables/useTimecode';
 import {
@@ -36,8 +38,22 @@ defineProps<{ inspectorOpen?: boolean }>();
 const emit = defineEmits<{ toggleInspector: [] }>();
 
 const timelineStore = useTimelineStore();
+const onAirStore = useOnAirStore();
 const { framesToTimecode } = useTimecode(() => timelineStore.fps);
 const playheadTimecode = computed(() => framesToTimecode(timelineStore.playhead));
+
+/** Timecode air started at — what the ON AIR readout in the header reports. */
+const onAirStartTimecode = computed(() =>
+  onAirStore.startedFrame === null ? '--:--:--:--' : framesToTimecode(onAirStore.startedFrame),
+);
+
+/** Follow On Air button state: engaged and receiving, engaged but off air, or unreachable. */
+const followTitle = computed(() => {
+  if (!onAirStore.following) return 'Follow Emerald TX — park the playhead on what is going to air and scroll with it';
+  if (!onAirStore.reachable) return 'Following on air — Emerald is not answering; holding the last known position';
+  if (!onAirStore.transmitting) return 'Following on air — TX is not transmitting right now';
+  return `On air since ${onAirStartTimecode.value} — click to stop following`;
+});
 const hasSelection = computed(() => timelineStore.selectedClip !== null);
 
 /** Whether the playhead currently sits inside an unlocked clip (so a cut is possible). */
@@ -100,8 +116,31 @@ function onKeydown(event: KeyboardEvent): void {
     splitAtPlayhead();
   }
 }
-onMounted(() => window.addEventListener('keydown', onKeydown));
-onUnmounted(() => window.removeEventListener('keydown', onKeydown));
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown);
+  syncViewport();
+  if (scrollRef.value && typeof ResizeObserver !== 'undefined') {
+    viewportObserver = new ResizeObserver(syncViewport);
+    viewportObserver.observe(scrollRef.value);
+  }
+  // The toggle is persisted, so an operator who left the editor following air comes back still
+  // following. Polling is tied to this component rather than started globally so navigating away
+  // from the editor doesn't leave a poll running against Emerald for a timeline nobody is watching.
+  if (onAirStore.following) onAirStore.setFollowing(true);
+});
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown);
+  onAirStore.stopPolling();
+  viewportObserver?.disconnect();
+  viewportObserver = null;
+});
+
+/**
+ * Height of the ruler strip. Owned here rather than left as a utility class on TimelineRuler
+ * because the on-air band has to start exactly where the lanes do, and the track-header column has
+ * to reserve exactly the same gap — three places that silently misalign if they drift apart.
+ */
+const RULER_HEIGHT_PX = 28;
 
 const BASE_PX_PER_FRAME = 3;
 const pixelsPerFrame = computed(() => BASE_PX_PER_FRAME * timelineStore.zoom);
@@ -136,14 +175,32 @@ const trackList = computed<Track[]>({
 
 const scrollRef = ref<HTMLElement | null>(null);
 
-// While playing, keep the playhead pinned near the left edge of the visible viewport so the
-// timeline visibly scrolls right-to-left underneath it instead of requiring a manual scroll to
-// follow along. Left untouched while paused so manual scrubbing/panning is never fought.
+// The horizontal scroll window, tracked so TimelineRuler can draw only the ticks in view — see its
+// `ticks` comment for why that matters on a timeline that spans a whole day.
+const viewportLeftPx = ref(0);
+const viewportWidthPx = ref(0);
+
+function syncViewport(): void {
+  const el = scrollRef.value;
+  if (!el) return;
+  viewportLeftPx.value = el.scrollLeft;
+  viewportWidthPx.value = el.clientWidth;
+}
+
+// Width changes without a scroll event whenever the splitpanes layout moves or the inspector opens,
+// and clientWidth reads 0 while the pane is hidden — an observer catches both, where a one-off
+// measurement on mount would leave the ruler sized for a stale (or zero-width) viewport.
+let viewportObserver: ResizeObserver | null = null;
+
+// While playing — or while following Emerald's on-air output — keep the playhead pinned near the
+// left edge of the visible viewport so the timeline visibly scrolls right-to-left underneath it
+// instead of requiring a manual scroll to follow along. Left untouched while paused and not
+// following, so manual scrubbing/panning is never fought.
 const FOLLOW_MARGIN_PX = 80;
 watch(
   () => timelineStore.playhead,
   (frame) => {
-    if (!timelineStore.isPlaying) return;
+    if (!timelineStore.isPlaying && !onAirStore.active) return;
     const el = scrollRef.value;
     if (!el) return;
     el.scrollLeft = Math.max(0, frame * pixelsPerFrame.value - FOLLOW_MARGIN_PX);
@@ -206,6 +263,34 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
           {{ playheadTimecode }}
         </span>
         <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Timeline</h2>
+
+        <!-- Follow On Air: parks the playhead on Emerald's TX timecode and scrolls with it. -->
+        <button
+          class="flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition"
+          :class="onAirStore.following
+            ? (onAirStore.active
+              ? 'border-rose-500/60 bg-rose-500/15 text-rose-300 shadow-glow-rose'
+              : 'border-amber-500/40 bg-amber-500/10 text-amber-300')
+            : 'border-white/5 text-slate-500 hover:border-rose-400/40 hover:text-rose-300'"
+          :title="followTitle"
+          @click="onAirStore.toggleFollow()"
+        >
+          <span
+            class="h-1.5 w-1.5 rounded-full"
+            :class="onAirStore.active ? 'animate-pulse bg-rose-400' : onAirStore.following ? 'bg-amber-400' : 'bg-slate-600'"
+          />
+          Follow Air
+        </button>
+
+        <!-- The timecode air started at, which is the whole point of following: it anchors what is
+             on the timeline to when the transmission actually began. -->
+        <span
+          v-if="onAirStore.active"
+          class="font-mono text-[10px] text-slate-500"
+          :title="onAirStore.startedAt ? `TX started ${new Date(onAirStore.startedAt).toLocaleString()}` : ''"
+        >
+          ON AIR FROM <span class="text-rose-300">{{ onAirStartTimecode }}</span>
+        </span>
       </div>
       <div class="flex items-center gap-2">
         <button
@@ -279,7 +364,7 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
     <div class="flex min-h-0 flex-1 overflow-y-auto">
       <!-- Track header column -->
       <div class="flex shrink-0 flex-col border-r border-white/5 bg-surface-850/60" style="width: 168px">
-        <div class="h-7 shrink-0 border-b border-white/10" />
+        <div class="shrink-0 border-b border-white/10" :style="{ height: `${RULER_HEIGHT_PX}px` }" />
         <draggable v-model="trackList" item-key="id" handle=".track-drag-handle" tag="div" class="flex flex-col">
           <template #item="{ element: track }">
             <div
@@ -345,12 +430,21 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
       </div>
 
       <!-- Scrollable timeline content -->
-      <div ref="scrollRef" class="relative min-w-0 flex-1 overflow-x-auto" @mousemove="handleMouseMove" @mouseleave="handleMouseLeave">
+      <div
+        ref="scrollRef"
+        class="relative min-w-0 flex-1 overflow-x-auto"
+        @scroll="syncViewport"
+        @mousemove="handleMouseMove"
+        @mouseleave="handleMouseLeave"
+      >
         <div class="relative" data-timeline-content :style="{ width: `${contentWidth}px`, minWidth: '100%' }">
           <TimelineRuler
             :pixels-per-frame="pixelsPerFrame"
             :fps="timelineStore.fps"
             :duration-frames="timelineStore.duration"
+            :height="RULER_HEIGHT_PX"
+            :viewport-start-px="viewportLeftPx"
+            :viewport-end-px="viewportLeftPx + viewportWidthPx"
             @scrub="handleScrub"
           />
           <TimelineTrack
@@ -359,6 +453,7 @@ function startHeightDrag(event: PointerEvent, trackId: string, startHeight: numb
             :track="track"
             :pixels-per-frame="pixelsPerFrame"
           />
+          <TimelineOnAirRegion :pixels-per-frame="pixelsPerFrame" :ruler-height="RULER_HEIGHT_PX" />
           <TimelineCursor :pixels-per-frame="pixelsPerFrame" :fps="timelineStore.fps" />
           <TimelinePlayhead :frame="timelineStore.playhead" :pixels-per-frame="pixelsPerFrame" @scrub="handleScrub" />
         </div>

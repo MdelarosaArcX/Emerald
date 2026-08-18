@@ -22,6 +22,18 @@ class DeltacastTxService {
     return this.request("POST", "/tx/stop");
   }
 
+  // Operator lip-sync calibration held by the C# service (it owns the ffmpeg legs that take video
+  // and audio separately, so it's the only place the shift can actually be applied). Setting it
+  // restarts the live preview encoder within about a second so the change is immediately visible;
+  // an in-progress recording keeps the value it started with.
+  async audioCalibration() {
+    return this.request("GET", "/audio-calibration");
+  }
+
+  async setAudioCalibration(offsetMs) {
+    return this.request("POST", "/audio-calibration", { offsetMs });
+  }
+
   async request(method, path, body) {
     let response;
 

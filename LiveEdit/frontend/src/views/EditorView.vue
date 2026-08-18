@@ -12,19 +12,21 @@ import ProgramMonitor from '@/components/monitor/ProgramMonitor.vue';
 import PlaybackMonitor from '@/components/monitor/PlaybackMonitor.vue';
 import TimelineEditor from '@/components/timeline/TimelineEditor.vue';
 import { useCaptureStore } from '@/stores/captureStore';
+import { useOnAirStore } from '@/stores/onAirStore';
 import { usePlaybackStore } from '@/stores/playbackStore';
 import { useProgramStore } from '@/stores/programStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useTimelineStore } from '@/stores/timelineStore';
 import 'splitpanes/dist/splitpanes.css';
 import { Pane, Splitpanes } from 'splitpanes';
-import { onMounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 
 const timelineStore = useTimelineStore();
 const playbackStore = usePlaybackStore();
 const captureStore = useCaptureStore();
 const programStore = useProgramStore();
 const settingsStore = useSettingsStore();
+const onAirStore = useOnAirStore();
 
 // The information/inspector drawer ("Video / Audio FX") is collapsed by default so the timeline
 // spans the full width, matching the broadcast layout. Toggled from the right-panel FX tab or the
@@ -37,11 +39,42 @@ watch(() => programStore.clip, (clip) => {
   if (clip) inspectorOpen.value = true;
 });
 
+/**
+ * Live Edit Mode is the "follow the transmission" switch, not just a layout change.
+ *
+ * Turning it on does three things that only make sense together: loads every finished segment of
+ * the recording on air onto the timeline (and keeps loading them as they finish), and parks the
+ * playhead on Emerald's on-air timecode so the timeline scrolls with air rather than sitting
+ * wherever it was left. Engaging at 10:02 on a transmission that started at 10:00 lands on 10:02's
+ * on-air frame with the preceding two minutes already laid down behind it.
+ *
+ * Turning it off stops both. Only fires on a change, so an operator who turns Follow Air off by
+ * hand to scrub around isn't overridden while Live Edit Mode stays on.
+ */
+function setLiveEditFollow(enabled: boolean): void {
+  if (enabled) {
+    timelineStore.startLiveSync();
+    onAirStore.setFollowing(true);
+  } else {
+    timelineStore.stopLiveSync();
+    onAirStore.setFollowing(false);
+  }
+}
+
+watch(() => settingsStore.liveEditMode, setLiveEditFollow);
+
 onMounted(async () => {
   await timelineStore.fetchTimeline();
   timelineStore.subscribeToSocket();
   playbackStore.subscribeToSocket();
   captureStore.subscribeToSocket();
+  // Ordered after fetchTimeline: the sync needs somewhere to put clips, and placeLiveSegment
+  // refuses (loudly) to run against a timeline that hasn't loaded.
+  if (settingsStore.liveEditMode) setLiveEditFollow(true);
+});
+
+onUnmounted(() => {
+  timelineStore.stopLiveSync();
 });
 </script>
 

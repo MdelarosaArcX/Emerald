@@ -1,7 +1,29 @@
 import { api } from '@/services/api';
+import { fetchActiveOrLatestSession, fetchSessionClips } from '@/services/emeraldPreview';
 import { getSocket, SOCKET_EVENTS } from '@/services/socket';
+import { useOnAirStore } from '@/stores/onAirStore';
 import type { Clip, Timeline, Track } from '@/types/clip';
 import { defineStore } from 'pinia';
+
+/**
+ * How often the live recording is re-scanned for newly finished segments.
+ *
+ * A backstop, not the primary path — the socket feed announces segments as they finish, and they
+ * are two minutes long, so there is nothing to gain from asking often and real cost to asking too
+ * often (see liveSyncInFlight).
+ */
+const LIVE_SYNC_INTERVAL_MS = 60000;
+
+/** Handle for the live-sync poll. Module-level so it stays out of reactive state. */
+let liveSyncTimer: number | null = null;
+/**
+ * Guards against overlapping syncs. Emerald's segment listing walks every file in the session
+ * folder — tens of thousands of HLS chunks on a recording that has been running all day — and can
+ * take longer than the poll interval. A bare interval would then start a second request before the
+ * first returned, then a third, each re-walking the whole folder and making the next slower still,
+ * until a client that only ever needed one answer at a time had saturated the backend.
+ */
+let liveSyncInFlight = false;
 
 interface TimelineState {
   timeline: Timeline | null;
@@ -113,6 +135,44 @@ export const useTimelineStore = defineStore('timeline', {
       const starts = this.allClips.map((c) => c.start);
       return starts.length ? Math.min(...starts) : null;
     },
+    /**
+     * Every live-captured clip the playhead currently sits inside — the material going to air right
+     * now. Usually the segment on the live video lane plus its paired audio clip, but a split
+     * segment or a second live lane is handled the same way since the flag travels with the pieces.
+     */
+    onAirClips(): Clip[] {
+      if (!this.isPlaying) return [];
+      const frame = this.playhead;
+      return this.allClips.filter((c) => c.live && frame >= c.start && frame < c.start + c.duration);
+    },
+    /**
+     * Frame span to draw the ON AIR band over, or null when nothing is on air.
+     *
+     * Two sources, in order of authority:
+     *
+     *  1. Emerald's TX output, when Follow On Air is engaged. This is air as a fact — the span runs
+     *     from the timecode the transmission started at to the timecode going out right now, so the
+     *     band grows across the session and shows exactly what this transmission has carried.
+     *  2. Otherwise, the live-captured clips under the playhead during local playback. A local
+     *     preview of live material isn't air, but it is the closest thing the editor can show when
+     *     TX isn't being followed, and the band is the same shape either way.
+     */
+    onAirRegion(): { start: number; end: number } | null {
+      const onAir = useOnAirStore();
+      if (onAir.active && onAir.currentFrame !== null) {
+        return { start: onAir.startedFrame ?? onAir.currentFrame, end: onAir.currentFrame };
+      }
+
+      const clips = this.onAirClips;
+      if (!clips.length) return null;
+      // The union rather than just the top lane's clip: an operator watching this band needs to
+      // know how much runway is left before playback runs off the end of the captured material,
+      // and that is the latest end across everything under the playhead, not one track's.
+      return {
+        start: Math.min(...clips.map((c) => c.start)),
+        end: Math.max(...clips.map((c) => c.start + c.duration)),
+      };
+    },
   },
 
   actions: {
@@ -158,48 +218,181 @@ export const useTimelineStore = defineStore('timeline', {
      * operator's own manual edits live on the lane(s) below it.
      */
     appendCaptureSegment(payload: EditCaptureSegmentAddedPayload): void {
+      const startFrame = this.placeLiveSegment({
+        name: payload.fileName,
+        url: payload.proxyUrl,
+        durationSeconds: payload.durationSeconds,
+        createdAt: payload.createdAt,
+        hasAudio: payload.hasAudio,
+      });
+
+      // Bring the newly-landed segment into view — see pendingScrollFrame's doc comment. Only for
+      // segments arriving live: a backfill places dozens at once and the last one to land is not
+      // necessarily where the operator wants to be looking.
+      if (startFrame !== null) this.pendingScrollFrame = startFrame;
+    },
+
+    /**
+     * Places one captured segment on the live video lane at its real time-of-day timecode, and
+     * returns the frame it landed on (null if it was skipped).
+     *
+     * Shared by both routes material arrives on: the socket feed announcing segments as they finish,
+     * and syncLiveSession's backfill of everything recorded before this browser was watching. They
+     * have to agree on placement to the frame or the same segment would sit in two different places
+     * depending on which route happened to deliver it.
+     *
+     * Already-placed segments are skipped by source URL, which is what makes the backfill safe to
+     * re-run on a timer: each tick only adds what is genuinely new.
+     */
+    placeLiveSegment(payload: {
+      name: string;
+      url: string;
+      durationSeconds: number;
+      createdAt: string;
+      hasAudio: boolean;
+      thumbnail?: string;
+    }): number | null {
       if (!this.timeline) {
-        console.warn('Ignoring edit-capture segment: timeline has not loaded yet.', payload);
-        return;
+        console.warn('Ignoring capture segment: timeline has not loaded yet.', payload);
+        return null;
       }
+
+      if (this.allClips.some((c) => c.path === payload.url)) return null;
 
       let track = this.videoTracks.find((t) => t.kind === 'video');
       if (!track) {
         const trackId = this.addTrack('video');
         track = this.timeline.tracks.find((t) => t.id === trackId);
       }
-      if (!track) return;
+      if (!track) return null;
 
       if (track.locked) {
-        console.warn('Ignoring edit-capture segment: the live video lane is locked.', payload);
-        return;
+        console.warn('Ignoring capture segment: the live video lane is locked.', payload);
+        return null;
       }
 
       const segmentStartedAtMs = new Date(payload.createdAt).getTime();
+      if (!Number.isFinite(segmentStartedAtMs)) return null;
+
       const dayStartMs = startOfDayMs(segmentStartedAtMs);
       const timecodeFrame = Math.round(((segmentStartedAtMs - dayStartMs) / 1000) * this.fps);
       // Clamp forward only — a genuine gap (dropped/delayed segment) still shows up as a gap, but
       // clock imprecision can't land this a frame or two *before* the previous clip's end and
-      // overlap it.
+      // overlap it. Real material does need this: consecutive segments routinely overlap by a
+      // second or two, because each one's duration slightly exceeds the interval between their
+      // birth times.
       const previousClipEnd = track.clips.reduce((end, c) => Math.max(end, c.start + c.duration), 0);
       const startFrame = Math.max(timecodeFrame, previousClipEnd);
-      const durationFrames = Math.round(payload.durationSeconds * this.fps);
 
       this.addClipFromSource({
-        name: payload.fileName,
-        url: payload.proxyUrl,
-        durationFrames,
+        name: payload.name,
+        url: payload.url,
+        thumbnail: payload.thumbnail,
+        durationFrames: Math.round(payload.durationSeconds * this.fps),
         trackId: track.id,
         startFrame,
         hasAudio: payload.hasAudio,
+        live: true,
       });
 
-      // Bring the newly-landed segment into view — see pendingScrollFrame's doc comment.
-      this.pendingScrollFrame = startFrame;
+      return startFrame;
+    },
+
+    /**
+     * Loads every finished segment of the recording currently on air onto the timeline, at its real
+     * time-of-day position.
+     *
+     * This is what makes turning Live Edit Mode on mid-transmission work. The socket feed only
+     * announces segments that finish while this browser is connected — the LiveEdit backend marks a
+     * segment announced the first time it sees it, whether or not anyone was listening — so opening
+     * the editor at 10:02 on a transmission that started at 10:00 would otherwise show an empty
+     * timeline with the playhead parked on nothing.
+     *
+     * Safe to call repeatedly: placeLiveSegment skips anything already on the timeline, so running
+     * this on a timer both backfills the past and keeps up with the present.
+     */
+    async syncLiveSession(): Promise<void> {
+      if (liveSyncInFlight) return;
+      liveSyncInFlight = true;
+      try {
+        await this.runLiveSync();
+      } finally {
+        liveSyncInFlight = false;
+      }
+    },
+
+    /** The sync itself. Only ever entered through syncLiveSession's in-flight guard. */
+    async runLiveSync(): Promise<void> {
+      const session = await fetchActiveOrLatestSession();
+      if (!session) return;
+
+      const clips = await fetchSessionClips(session.folder);
+
+      // Selection is restored afterwards: addClipFromSource selects what it inserts (right for a
+      // deliberate drag-in, wrong for a bulk sync that would otherwise yank the inspector onto
+      // whichever segment happened to land last).
+      const previousSelection = this.selectedClipId;
+
+      const finished = clips
+        // "ts" segments are raw HLS chunks of the still-recording tail, and an mp4 without a probed
+        // duration is still being written — neither is a complete file, which is what goes on the
+        // timeline.
+        .filter((clip) => clip.kind === 'mp4' && clip.durationSeconds != null)
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+      for (const clip of finished) {
+        this.placeLiveSegment({
+          name: clip.fileName,
+          url: clip.url,
+          durationSeconds: clip.durationSeconds as number,
+          createdAt: clip.createdAt,
+          hasAudio: clip.hasAudio !== false,
+          thumbnail: clip.thumbnailUrl ?? undefined,
+        });
+      }
+
+      this.selectedClipId = previousSelection;
+    },
+
+    /**
+     * Begins keeping the timeline in step with the live recording — an immediate backfill, then a
+     * poll for newly finished segments.
+     *
+     * Polls rather than relying on the socket alone because the socket only carries what finishes
+     * while connected; this is the path that survives a reload, a navigation away and back, or the
+     * LiveEdit backend restarting mid-session.
+     */
+    startLiveSync(): void {
+      void this.syncLiveSession();
+      if (liveSyncTimer !== null) return;
+      liveSyncTimer = window.setInterval(() => {
+        void this.syncLiveSession();
+      }, LIVE_SYNC_INTERVAL_MS);
+    },
+
+    stopLiveSync(): void {
+      if (liveSyncTimer !== null) {
+        window.clearInterval(liveSyncTimer);
+        liveSyncTimer = null;
+      }
     },
 
     selectClip(clipId: string | null): void {
       this.selectedClipId = clipId;
+    },
+
+    /**
+     * Widen the timeline so it reaches at least `frames`.
+     *
+     * Following air needs this: TX transmits at the live edge, ahead of the last segment that has
+     * finished writing to disk, so the on-air frame is routinely past timeline.duration — and
+     * setPlayhead clamps. Without room to move into, the playhead would peg to the end of the last
+     * landed clip and quietly stop following.
+     */
+    ensureDuration(frames: number): void {
+      if (!this.timeline) return;
+      const target = Math.ceil(frames);
+      if (target > this.timeline.duration) this.timeline.duration = target;
     },
 
     setPlayhead(frames: number, emit = true): void {
@@ -271,6 +464,8 @@ export const useTimelineStore = defineStore('timeline', {
       startFrame: number;
       kind?: 'video' | 'audio';
       hasAudio?: boolean;
+      /** Set by appendCaptureSegment for material coming off the live recorder — see Clip.live. */
+      live?: boolean;
     }): string | null {
       const track = this.timeline?.tracks.find((t) => t.id === payload.trackId);
       if (!this.timeline || !track || track.locked) return null;
@@ -299,6 +494,7 @@ export const useTimelineStore = defineStore('timeline', {
         speed: 1,
         volume: 100,
         locked: false,
+        live: payload.live,
       };
       track.clips.push(clip);
       this.timeline.duration = Math.max(this.timeline.duration, clip.start + clip.duration);

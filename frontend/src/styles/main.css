@@ -310,6 +310,21 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
+/* Timecode-generator lock badge, under the timecode readout in CaptureStatusPanel. Sits smaller
+   and dimmer than the timecode itself when healthy — it only needs to draw the eye when the
+   timecode has stopped being the generator's. */
+.timecode-lock {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(185, 194, 219, 0.55);
+}
+
+.timecode-lock.free_run,
+.timecode-lock.mismatch {
+  color: #ffb454;
+}
+
 .config-grid-2col {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -916,6 +931,266 @@ textarea {
   color: #f0f4ff;
 }
 
+/* Audio Sync (lip-sync calibration) row in RecorderPanel. A div rather than a label, because it
+   holds several controls and a label would steal clicks on the step buttons for its input — so
+   it has to restate the grid/type the `label` element selector above would otherwise supply. */
+.audio-sync-row {
+  display: grid;
+  align-items: center;
+  color: rgba(185, 194, 219, 0.72);
+  font-size: 0.92rem;
+}
+
+.audio-sync-row.disabled {
+  opacity: 0.45;
+}
+
+.audio-sync-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.audio-sync-input {
+  width: 68px;
+  text-align: right;
+}
+
+.audio-sync-unit {
+  color: rgba(185, 194, 219, 0.5);
+  font-size: 0.8rem;
+}
+
+.audio-sync-step {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid rgba(79, 103, 158, 0.45);
+  background: #17223a;
+  color: #d7ddeb;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.audio-sync-step:hover:not(:disabled) {
+  border-color: #4f679e;
+  color: #35f0b1;
+}
+
+.audio-sync-step:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.audio-sync-reset {
+  margin-left: 2px;
+}
+
+/* The same offset in frames — what an operator judging lip sync against picture actually reasons
+   in, kept next to the ms field rather than replacing it so sub-frame values stay editable. */
+.audio-sync-frames {
+  min-width: 54px;
+  color: rgba(185, 194, 219, 0.55);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-sync-applying {
+  color: #ffb454;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+/* Monitor audio: speaker toggle + volume in a player's transport row. Dim when muted so a silent
+   gallery reads as deliberate, green when something is actually being listened to — with several
+   players on screen an operator needs to see at a glance which one they are hearing. */
+.monitor-audio {
+  min-width: 26px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid rgba(79, 103, 158, 0.45);
+  border-radius: 3px;
+  background: #17223a;
+  color: #d7ddeb;
+  font-size: 0.82rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.monitor-audio:hover:not(:disabled) {
+  border-color: #4f679e;
+}
+
+.monitor-audio.on {
+  border-color: #35f0b1;
+  box-shadow: 0 0 6px rgba(53, 240, 177, 0.45);
+}
+
+.monitor-audio:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.monitor-volume {
+  width: 72px;
+  height: 4px;
+  padding: 0;
+  border: 0;
+  background: rgba(79, 103, 158, 0.45);
+  accent-color: #35f0b1;
+  cursor: pointer;
+}
+
+/* MonitorPage variant: that view is deliberately chrome-free (it gets left on a wall), so the
+   control floats over the corner of the tile and stays out of the way until hovered. */
+.monitor-audio-tile {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 5;
+  min-width: 30px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #e5eaf5;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.15s ease;
+}
+
+.monitor-tile:hover .monitor-audio-tile,
+.monitor-audio-tile:focus-visible,
+.monitor-audio-tile.on {
+  opacity: 1;
+}
+
+.monitor-audio-tile.on {
+  border-color: #35f0b1;
+  color: #35f0b1;
+}
+
+/* Media Browser multi-select + export. The tick sits on the card corner rather than replacing
+   click-to-preview, so choosing what to export never changes what is being watched. */
+.export-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.export-count {
+  color: rgba(185, 194, 219, 0.55);
+  font-size: 0.78rem;
+}
+
+.export-link,
+.export-action {
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid rgba(79, 103, 158, 0.45);
+  border-radius: 3px;
+  background: #17223a;
+  color: #d7ddeb;
+  font-size: 0.78rem;
+  line-height: 20px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.export-action {
+  border-color: #35f0b1;
+  color: #35f0b1;
+}
+
+.export-link:disabled,
+.export-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.clip-card {
+  position: relative;
+}
+
+.clip-tick {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 3;
+  width: 15px;
+  height: 15px;
+  min-height: 0;
+  padding: 0;
+  accent-color: #35f0b1;
+  cursor: pointer;
+}
+
+.clip-card.ticked {
+  outline: 1px solid #35f0b1;
+  outline-offset: -1px;
+}
+
+.export-dialog {
+  position: absolute;
+  top: 44px;
+  right: 12px;
+  z-index: 20;
+  width: 288px;
+  padding: 12px 14px;
+  border: 1px solid #4f679e;
+  border-radius: 4px;
+  background: #101a2e;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+}
+
+.export-dialog h3 {
+  margin: 0 0 6px;
+  color: #e5eaf5;
+  font-size: 0.92rem;
+}
+
+.export-hint {
+  margin: 0 0 10px;
+  color: rgba(185, 194, 219, 0.6);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.export-warn {
+  margin: 6px 0 0;
+  color: #ffb454;
+  font-size: 0.76rem;
+}
+
+.export-field {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: rgba(185, 194, 219, 0.72);
+  font-size: 0.8rem;
+}
+
+.export-field input {
+  height: 22px;
+  padding: 0 7px;
+  border-color: rgba(79, 103, 158, 0.35);
+  background: #17223a;
+  color: #e5eaf5;
+}
+
+.export-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .auto-select {
   color: rgba(185, 194, 219, 0.5);
 }
@@ -991,6 +1266,68 @@ textarea:focus {
   font-size: 0.82rem;
 }
 
+/* Tidal Lock's pre-roll hold — see SessionPlaybackDeck's countdown block. Amber rather than the
+   red used for on-air state: this is a deliberate wait, not a fault and not a transmission. */
+.onair-countdown {
+  margin: -4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 176, 32, 0.32);
+  border-radius: 10px;
+  background: rgba(255, 176, 32, 0.08);
+}
+
+.onair-countdown-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.onair-countdown-label {
+  color: #ffcb6b;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.onair-countdown-value {
+  color: #ffd79a;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 1.4rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.onair-countdown-bar {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.onair-countdown-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ffb020, #ffd79a);
+  /* Matches the 40ms tick that drives it, so the bar creeps rather than stepping. */
+  transition: width 0.04s linear;
+}
+
+.onair-countdown-stage {
+  margin: 8px 0 0;
+  color: #e4c48d;
+  font-size: 0.78rem;
+}
+
+.onair-countdown-detail {
+  margin: 2px 0 0;
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
@@ -1032,6 +1369,9 @@ button:disabled {
 
 .media-browser {
   padding-top: 10px;
+  /* Anchors the absolutely-positioned export dialog to this panel rather than to whatever
+     positioned ancestor happens to be further up the page. */
+  position: relative;
 }
 
 .media-toolbar {

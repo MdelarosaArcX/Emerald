@@ -28,7 +28,7 @@ function onDragOver(event: DragEvent): void {
   dragOver.value = true;
 }
 
-function onDrop(event: DragEvent): void {
+async function onDrop(event: DragEvent): Promise<void> {
   dragOver.value = false;
   if (props.track.locked) return;
   const raw = event.dataTransfer?.getData('application/x-emerald-clip');
@@ -43,17 +43,57 @@ function onDrop(event: DragEvent): void {
   }
 
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-  const startFrame = Math.max(0, Math.round((event.clientX - rect.left) / props.pixelsPerFrame));
+  const droppedFrame = Math.max(0, Math.round((event.clientX - rect.left) / props.pixelsPerFrame));
+
+  // A source that carries its own timecode is placed at that timecode rather than where the
+  // pointer happened to land. Emerald's clip export stamps one (a QuickTime tmcd track), which is
+  // what makes an exported file drop back onto the timeline at the position it was captured at —
+  // so a re-export can be conformed against the original without lining it up by hand.
+  //
+  // Awaited before inserting rather than inserting and moving afterwards: a clip that visibly
+  // jumps after landing looks like a bug, and the read is a cached ffprobe of a local file.
+  const timecodeFrame = await fetchSourceTimecodeFrame(data.url, timelineStore.fps);
+
   timelineStore.addClipFromSource({
     name: data.name,
     url: data.url,
     thumbnail: data.thumbnail,
     durationFrames: Math.round((data.durationSeconds ?? 5) * timelineStore.fps),
     trackId: props.track.id,
-    startFrame,
+    startFrame: timecodeFrame ?? droppedFrame,
     kind: props.track.kind === 'audio' ? 'audio' : 'video',
     hasAudio: data.hasAudio,
   });
+}
+
+/**
+ * Frame offset from midnight for a source's embedded timecode, or null when it has none.
+ *
+ * Midnight-relative because that is the origin the rest of this timeline counts from (see
+ * timelineStore's handling of live segments, which converts their capture time the same way), so
+ * an exported clip and the live segments it came from land on the same scale.
+ */
+async function fetchSourceTimecodeFrame(url: string, fps: number): Promise<number | null> {
+  if (!/^https?:/i.test(url)) return null;
+
+  try {
+    const response = await fetch(`/api/source-timecode?url=${encodeURIComponent(url)}`);
+    if (!response.ok) return null;
+
+    const body = (await response.json()) as { data?: { timecode?: string | null } };
+    const timecode = body.data?.timecode;
+    if (!timecode) return null;
+
+    // Drop-frame sources use ';' before the frames field; the separator is accepted but the
+    // arithmetic below is non-drop, matching how the rest of the editor counts.
+    const match = /^(\d{2}):(\d{2}):(\d{2})[:;](\d{2})$/.exec(timecode);
+    if (!match) return null;
+
+    const [, hours, minutes, seconds, frames] = match.map(Number);
+    return Math.round(((hours * 3600 + minutes * 60 + seconds) * fps) + frames);
+  } catch {
+    return null;
+  }
 }
 </script>
 
@@ -89,6 +129,7 @@ function onDrop(event: DragEvent): void {
       :selected="timelineStore.selectedClipId === clip.id"
       :track-locked="track.locked"
       :track-height="track.height"
+      :fps="timelineStore.fps"
       @select="timelineStore.selectClip($event)"
       @change="onClipChange(clip.id, $event)"
       @commit="onClipChange(clip.id, $event)"

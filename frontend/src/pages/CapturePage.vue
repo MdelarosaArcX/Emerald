@@ -6,8 +6,10 @@ import CanvasWorkspace from "../components/CanvasWorkspace.vue";
 import CaptureLogPanel from "../components/CaptureLogPanel.vue";
 import CaptureStatusPanel from "../components/CaptureStatusPanel.vue";
 import { useRecorderStore } from "../stores/recorder";
+import { useCaptureHealthStore } from "../stores/captureHealth";
 
 const recorder = useRecorderStore();
+const captureHealth = useCaptureHealthStore();
 const refreshHandle = ref<number | null>(null);
 const clockHandle = ref<number | null>(null);
 const now = ref(Date.now());
@@ -15,7 +17,12 @@ const librarySplitView = ref(false);
 type MediaTab = "browser" | "logs";
 const mediaTab = ref<MediaTab>("browser");
 
-const configuredFps = computed(() => Math.max(1, Number(recorder.settings.fps) || 25));
+// The generator's frame rate when we're locked to it, since the timecode below has to be counted
+// in the same frame base the generator counts in — the recorder's own setting only stands in when
+// the backend hasn't reported one yet.
+const configuredFps = computed(() =>
+  Math.max(1, captureHealth.data?.timecodeSource?.frameRate || Number(recorder.settings.fps) || 25),
+);
 
 const selectedRecording = computed(() => recorder.selectedRecording);
 
@@ -39,7 +46,13 @@ const libraryDetail = computed(() => {
   if (!recording) return "Waiting for recorded chunks";
   return `${formatSize(recording.size)} | ${formatDate(recording.createdAt)}`;
 });
-const captureTimecode = computed(() => formatWallClockTimecode(now.value, configuredFps.value));
+// The Timecode System generator's timecode, ticking smoothly at frame rate. The local ticker
+// supplies the smoothness (a 1Hz backend poll would visibly stutter) and captureHealth's measured
+// offset supplies the accuracy — so this is the generator's timecode, not this browser's clock
+// dressed up as one, which is what it used to be.
+const captureTimecode = computed(() =>
+  formatWallClockTimecode(now.value + captureHealth.clockOffsetMs, configuredFps.value),
+);
 const captureTransportLabel = computed(() => {
   if (recorder.isRecording) return "Recording ...";
   if (selectedRecording.value) return selectedRecording.value.fileName;

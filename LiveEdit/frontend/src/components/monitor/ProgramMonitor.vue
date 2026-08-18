@@ -10,10 +10,12 @@ import AudioMeter from '@/components/monitor/AudioMeter.vue';
 import TransportControls from '@/components/monitor/TransportControls.vue';
 import { requestProxy } from '@/services/render';
 import { useTimecode } from '@/composables/useTimecode';
+import { useOnAirStore } from '@/stores/onAirStore';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue';
 
 const timelineStore = useTimelineStore();
+const onAirStore = useOnAirStore();
 
 const frameRef = ref<HTMLElement | null>(null);
 const videoRef = ref<HTMLVideoElement | null>(null);
@@ -224,6 +226,9 @@ function stopRaf(): void {
 
 function play(): void {
   if (timelineStore.duration <= 0) return;
+  // Following air owns the playhead — the two would fight over it frame by frame. Hitting play is
+  // an explicit request to drive the timeline by hand, so it wins and follow disengages.
+  if (onAirStore.following) onAirStore.setFollowing(false);
   // Frame 0 is midnight (see timelineStore.appendCaptureSegment) — a playhead left at 0, or
   // anywhere before the first clip, sits in a real-time gap that could be hours long. Jump to the
   // first clip instead of starting playback somewhere with nothing to show. Only when the

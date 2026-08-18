@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useRecorderStore } from "../stores/recorder";
 import { useTxStore } from "../stores/tx";
+import { useMonitorAudio } from "../composables/useMonitorAudio";
 
 // Video-only confidence monitor meant to be opened on another machine on the same network — no
 // editing chrome, no controls, just live video, auto-connecting and self-healing so it can be
@@ -22,6 +23,17 @@ const tx = useTxStore();
 
 const captureVideo = ref<HTMLVideoElement | null>(null);
 const onAirVideo = ref<HTMLVideoElement | null>(null);
+
+// Monitor audio for each feed. Both elements stay muted in markup so this wall can be left
+// running unattended and still autoplay; sound only starts once someone clicks a speaker. Only
+// one feed is ever audible at a time — capture and on-air carry the same programme a few seconds
+// apart, so hearing both at once is an echo, not a louder monitor.
+const captureAudio = useMonitorAudio("monitor-capture");
+const onAirAudio = useMonitorAudio("monitor-onair");
+const captureAudible = computed(() => captureAudio.enabled.value && captureAudio.isOwner.value);
+const onAirAudible = computed(() => onAirAudio.enabled.value && onAirAudio.isOwner.value);
+watch([captureAudible, captureAudio.volume, captureVideo], () => captureAudio.apply(captureVideo.value));
+watch([onAirAudible, onAirAudio.volume, onAirVideo], () => onAirAudio.apply(onAirVideo.value));
 const captureConnected = ref(false);
 const onAirConnected = ref(false);
 let refreshHandle: number | null = null;
@@ -261,10 +273,13 @@ watch(showOnAirPreview, (show) => {
 
 function onCapturePlaying() {
   captureConnected.value = true;
+  // Reconnects hand over a fresh MediaStream, which arrives muted.
+  captureAudio.apply(captureVideo.value);
 }
 
 function onOnAirPlaying() {
   onAirConnected.value = true;
+  onAirAudio.apply(onAirVideo.value);
 }
 
 onMounted(async () => {
@@ -309,6 +324,15 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <video ref="captureVideo" autoplay muted playsinline @playing="onCapturePlaying"></video>
+      <button
+        v-if="captureConnected"
+        type="button"
+        class="monitor-audio-tile"
+        :class="{ on: captureAudible }"
+        :aria-pressed="captureAudible"
+        :title="captureAudible ? 'Muting capture audio' : 'Listen to capture'"
+        @click="captureAudio.toggle()"
+      >{{ captureAudible ? "🔊" : "🔇" }}</button>
       <div v-if="!captureConnected" class="monitor-empty">
         {{ recorder.webrtcStatus?.isRunning ? "Connecting..." : "Capture preview is not running" }}
       </div>
@@ -326,6 +350,15 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <video ref="onAirVideo" autoplay muted playsinline @playing="onOnAirPlaying"></video>
+      <button
+        v-if="onAirConnected"
+        type="button"
+        class="monitor-audio-tile"
+        :class="{ on: onAirAudible }"
+        :aria-pressed="onAirAudible"
+        :title="onAirAudible ? 'Muting on-air audio' : 'Listen to on air'"
+        @click="onAirAudio.toggle()"
+      >{{ onAirAudible ? "🔊" : "🔇" }}</button>
       <div v-if="!onAirConnected" class="monitor-empty">
         {{
           !tx.isTransmitting

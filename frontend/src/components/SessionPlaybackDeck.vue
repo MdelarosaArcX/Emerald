@@ -2,10 +2,17 @@
 import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
 import { useSessionPlaybackStore } from "../stores/sessionPlayback";
 import { useTxStore } from "../stores/tx";
+import { useMonitorAudio } from "../composables/useMonitorAudio";
 
 const sessionPlayback = useSessionPlaybackStore();
 const tx = useTxStore();
 const video = ref<HTMLVideoElement | null>(null);
+
+// This deck monitors the on-air feed. The element stays muted in markup so it can autoplay;
+// audio is enabled on the element's property only once the operator clicks the speaker.
+const monitorAudio = useMonitorAudio("playback-deck");
+const audible = computed(() => monitorAudio.enabled.value && monitorAudio.isOwner.value);
+watch([audible, monitorAudio.volume, video], () => monitorAudio.apply(video.value));
 const isPlaying = ref(false);
 const now = ref(Date.now());
 const refreshHandle = ref<number | null>(null);
@@ -60,14 +67,71 @@ const showPreview = computed(() => tx.isTransmitting && Boolean(onAirWhepUrl.val
 // alongside the other 5s status refreshes below and applied locally so the on-screen clock can
 // still tick smoothly every 40ms without a network round-trip per frame.
 const onAirBroadcastDelaySeconds = ref(0);
-const timecode = computed(() => toWallClockTimecode(now.value - onAirBroadcastDelaySeconds.value * 1000));
+// Picked up from the same poll: how far this browser's clock sits from the backend's
+// generator-corrected one, and the frame rate the generator counts in. Same split as the Capture
+// page — the local ticker gives a smooth 40ms readout, these two make what it shows the
+// generator's timecode rather than this machine's idea of the time.
+const clockOffsetMs = ref(0);
+const generatorFps = ref(25);
+const timecode = computed(() =>
+  toWallClockTimecode(now.value + clockOffsetMs.value - onAirBroadcastDelaySeconds.value * 1000),
+);
+
+// --- Tidal Lock readiness countdown -------------------------------------------------------------
+// A new recording has nothing airable until a segment has finished writing AND aged past the
+// broadcast delay (see sessionPlayback.onAirReadyAtMs). That is a three-minute wait at the
+// recorder's defaults, during which Tidal Lock looks like it is doing nothing — so it says how long
+// it has left instead. Driven off the same `now` ticker as the on-screen clock.
+const onAirHoldRemainingMs = computed(() => {
+  const readyAtMs = sessionPlayback.onAirReadyAtMs;
+  if (readyAtMs === null) return 0;
+  return Math.max(0, readyAtMs - (now.value + clockOffsetMs.value));
+});
+
+/** Only a countdown while it is actually holding something back — not once air is already up. */
+const showOnAirCountdown = computed(() => onAirHoldRemainingMs.value > 0 && !tx.isTransmitting);
+
+const onAirCountdown = computed(() => {
+  const totalSeconds = Math.ceil(onAirHoldRemainingMs.value / 1000);
+  return `${pad(Math.floor(totalSeconds / 60))}:${pad(totalSeconds % 60)}`;
+});
+
+/** Progress through the hold, 0..1 — drives the countdown bar. */
+const onAirCountdownProgress = computed(() => {
+  const totalMs = sessionPlayback.onAirHoldSeconds * 1000;
+  if (totalMs <= 0) return 1;
+  return Math.min(1, Math.max(0, 1 - onAirHoldRemainingMs.value / totalMs));
+});
+
+/** Which of the two stacked waits is still running, so the countdown says what it is waiting for. */
+const onAirCountdownStage = computed(() => {
+  const recorder = sessionPlayback.recorder;
+  if (!recorder) return "";
+  const delayMs = (recorder.broadcastDelaySeconds ?? 0) * 1000;
+  return onAirHoldRemainingMs.value > delayMs
+    ? "Waiting for the first segment to finish recording"
+    : "Segment recorded — serving the broadcast delay";
+});
 
 async function refreshOnAirDelay() {
   try {
+    const sentAt = Date.now();
     const response = await fetch("/api/capture/timecode");
     if (!response.ok) return;
     const data = await response.json();
+    const receivedAt = Date.now();
+
     onAirBroadcastDelaySeconds.value = data?.onAir?.broadcastDelaySeconds ?? 0;
+    generatorFps.value = data?.timecodeSource?.frameRate || data?.fps || 25;
+
+    // Assume the backend read its clock at the midpoint of this request.
+    const backendNow = Date.parse(data?.timestamp);
+    if (Number.isFinite(backendNow)) {
+      clockOffsetMs.value = backendNow - (sentAt + (receivedAt - sentAt) / 2);
+      // The Tidal Lock hold is measured against the recorder's backend-stamped start time, so it
+      // needs the same correction this clock already applies — shared rather than measured twice.
+      sessionPlayback.setClockOffsetMs(clockOffsetMs.value);
+    }
   } catch {
     // Transient — the next 5s poll will retry; the clock just keeps using the last known delay.
   }
@@ -109,7 +173,7 @@ onMounted(async () => {
     // available, but the rest of the page (folder selection, Push On Air, Tidal Lock) still works.
   }
 
-  await Promise.all([sessionPlayback.loadSessions(), tx.refresh(), refreshOnAirDelay()]);
+  await Promise.all([sessionPlayback.loadSessions(), sessionPlayback.loadRecorderStatus(), tx.refresh(), refreshOnAirDelay()]);
   // Explicit call instead of relying on the watch() above: showPreview can already be true the
   // moment this component mounts (e.g. Tidal Lock re-engaging after navigating back to this
   // page) — a plain watch() only fires on a *change*, so without this the preview would stay
@@ -119,7 +183,7 @@ onMounted(async () => {
   // store) — re-sync immediately on mount instead of waiting up to 5s for the next poll tick.
   await sessionPlayback.applyTidalLock();
   refreshHandle.value = window.setInterval(async () => {
-    await Promise.all([sessionPlayback.loadSessions(), tx.refresh(), refreshOnAirDelay()]);
+    await Promise.all([sessionPlayback.loadSessions(), sessionPlayback.loadRecorderStatus(), tx.refresh(), refreshOnAirDelay()]);
     await sessionPlayback.applyTidalLock();
   }, 5000);
   clockHandle.value = window.setInterval(() => {
@@ -305,6 +369,8 @@ function stopStallWatchdog() {
 
 function onPlaying() {
   isPlaying.value = true;
+  // A reconnect swaps in a new MediaStream, which arrives muted — reassert the operator's choice.
+  monitorAudio.apply(video.value);
 }
 
 function onPause() {
@@ -319,7 +385,7 @@ function toWallClockTimecode(ms: number): string {
   const date = new Date(ms);
   if (Number.isNaN(date.getTime())) return "00:00:00:00";
 
-  const frames = Math.floor((date.getMilliseconds() / 1000) * 25);
+  const frames = Math.floor((date.getMilliseconds() / 1000) * generatorFps.value);
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}:${pad(frames)}`;
 }
 
@@ -388,6 +454,28 @@ function formatLastFrame(value?: string | null) {
       <span v-if="isPlaying" class="record-label">
         <i></i> On-air preview (WebRTC)
       </span>
+      <button
+        type="button"
+        class="monitor-audio"
+        :class="{ on: audible }"
+        :disabled="!isPlaying"
+        :aria-pressed="audible"
+        :title="audible
+          ? `Monitoring on-air audio (${Math.round(monitorAudio.volume.value * 100)}%) — click to mute`
+          : 'Listen to the on-air feed'"
+        @click="monitorAudio.toggle()"
+      >{{ audible ? "🔊" : "🔇" }}</button>
+      <input
+        v-if="audible"
+        v-model.number="monitorAudio.volume.value"
+        class="monitor-volume"
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        aria-label="Monitor volume"
+        :title="`Monitor volume ${Math.round(monitorAudio.volume.value * 100)}%`"
+      />
       <button type="button" class="fullscreen" aria-label="Fullscreen"></button>
     </div>
 
@@ -462,9 +550,25 @@ function formatLastFrame(value?: string | null) {
           ? "Waiting for a recording to start..."
           : tx.isTransmitting
             ? `Following ${sessionPlayback.selectedFolder} — auto on air`
-            : `Following ${sessionPlayback.selectedFolder} — waiting for the first segment to be ready...`
+            : `Following ${sessionPlayback.selectedFolder} — holding until the first segment is airable`
       }}
     </p>
+
+    <!-- The three-minute hold, made visible: an operator watching a fresh recording otherwise has
+         no way to tell "Tidal Lock is waiting on purpose" from "Tidal Lock is broken". -->
+    <div v-if="showOnAirCountdown" class="onair-countdown" role="status" aria-live="polite">
+      <div class="onair-countdown-head">
+        <span class="onair-countdown-label">On air in</span>
+        <span class="onair-countdown-value">{{ onAirCountdown }}</span>
+      </div>
+      <div class="onair-countdown-bar">
+        <span :style="{ width: `${onAirCountdownProgress * 100}%` }"></span>
+      </div>
+      <p class="onair-countdown-stage">{{ onAirCountdownStage }}</p>
+      <p class="onair-countdown-detail">
+        {{ sessionPlayback.recorder?.segmentSeconds ?? 0 }}s segment + {{ sessionPlayback.recorder?.broadcastDelaySeconds ?? 0 }}s broadcast delay
+      </p>
+    </div>
 
     <div class="onair-cue" v-if="sessionPlayback.cuedClip">
       <h3>On Air Queue</h3>

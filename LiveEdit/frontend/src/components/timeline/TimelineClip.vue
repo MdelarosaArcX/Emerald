@@ -10,6 +10,7 @@ import { useDragResize } from '@/composables/useDragResize';
 import type { Clip } from '@/types/clip';
 import { SparklesIcon } from '@heroicons/vue/24/solid';
 import { computed } from 'vue';
+import ClipWaveform from './ClipWaveform.vue';
 
 const props = defineProps<{
   clip: Clip;
@@ -17,6 +18,8 @@ const props = defineProps<{
   selected: boolean;
   trackLocked: boolean;
   trackHeight: number;
+  /** Timeline frame rate — converts the clip's frame-based trim points into seconds. */
+  fps: number;
 }>();
 
 const emit = defineEmits<{
@@ -44,28 +47,15 @@ function onPointerDown(event: PointerEvent, mode: 'move' | 'resize-left' | 'resi
 
 const typeLabel = computed(() => props.clip.type.toUpperCase());
 
-/**
- * Deterministic bar heights (0.15–1) for the audio waveform, derived from the
- * clip id so a given clip always renders the same shape without needing real
- * PCM analysis. Uses clip.waveform when the backend provides it.
- */
-const WAVE_BARS = 64;
-const waveform = computed<number[]>(() => {
-  if (props.clip.waveform?.length) return props.clip.waveform;
-  const seedBase = props.clip.id;
-  const bars: number[] = [];
-  for (let i = 0; i < WAVE_BARS; i += 1) {
-    let h = 0;
-    for (let k = 0; k < seedBase.length; k += 1) {
-      h += seedBase.charCodeAt(k) * ((i % 7) + 1) * (k + 3);
-    }
-    const norm = (Math.sin(h) + 1) / 2; // 0..1
-    bars.push(0.18 + norm * 0.82);
-  }
-  return bars;
-});
-
 const isAudio = computed(() => props.clip.type === 'audio');
+
+/**
+ * Trim window in seconds, which is what ClipWaveform needs to index into the decoded source.
+ * fps comes from the timeline the clip belongs to rather than being assumed, since a clip's frame
+ * values are only meaningful against the rate they were placed at.
+ */
+const trimInSeconds = computed(() => props.clip.trimIn / props.fps);
+const trimOutSeconds = computed(() => props.clip.trimOut / props.fps);
 const isVideo = computed(() => props.clip.type === 'video');
 const isFx = computed(() => props.clip.type === 'fx');
 </script>
@@ -93,12 +83,14 @@ const isFx = computed(() => props.clip.type === 'fx');
       <div class="flex items-center gap-1 px-1.5 pt-1 text-[10px] font-medium leading-none" :style="{ color: clip.color }">
         <span class="truncate">{{ clip.name }}</span>
       </div>
-      <div class="flex flex-1 items-center gap-px overflow-hidden px-1 pb-1">
-        <span
-          v-for="(h, i) in waveform"
-          :key="i"
-          class="min-w-[1px] flex-1 rounded-[1px]"
-          :style="{ height: `${Math.round(h * 100)}%`, backgroundColor: clip.color, opacity: 0.85 }"
+      <div class="flex-1 overflow-hidden px-1 pb-1">
+        <ClipWaveform
+          v-if="clip.path"
+          :url="clip.path"
+          :trim-in-seconds="trimInSeconds"
+          :trim-out-seconds="trimOutSeconds"
+          :width="width"
+          :color="clip.color"
         />
       </div>
     </template>

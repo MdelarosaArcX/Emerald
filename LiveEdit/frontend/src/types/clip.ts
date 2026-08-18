@@ -34,6 +34,12 @@ export interface Clip {
   locked?: boolean;
   thumbnail?: string;
   waveform?: number[];
+  /**
+   * True for material that arrived from the live edit-capture recorder rather than being placed by
+   * hand. Splitting or trimming such a clip keeps the flag, since the pieces are still live
+   * material — it describes where the footage came from, not how it has been edited since.
+   */
+  live?: boolean;
 }
 
 /** A timeline track (video, audio, or fx lane). */

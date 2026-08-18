@@ -18,6 +18,105 @@ const emit = defineEmits<{
   select: [fileName: string];
 }>();
 
+// Multi-selection for export, kept separate from `selectedFileName` (which drives the preview
+// player). Clicking a card still previews it; the checkbox is what builds an export set, so
+// picking clips to join never disturbs what is being watched.
+const exportSelection = ref<Set<string>>(new Set());
+const exportBusy = ref(false);
+const exportError = ref<string | null>(null);
+const exportResult = ref<{ fileName: string; url: string; startTimecode: string; clipCount: number } | null>(null);
+const showExportDialog = ref(false);
+const exportTimecode = ref("");
+const exportName = ref("");
+const timecodeUnknown = ref(false);
+
+const selectedClips = computed(() =>
+  displayedRecordings.value.filter((recording) => exportSelection.value.has(recording.fileName)),
+);
+
+function toggleExportSelection(fileName: string) {
+  const next = new Set(exportSelection.value);
+  if (next.has(fileName)) next.delete(fileName);
+  else next.add(fileName);
+  exportSelection.value = next;
+}
+
+function selectAllForExport() {
+  exportSelection.value = new Set(displayedRecordings.value.map((recording) => recording.fileName));
+}
+
+function clearExportSelection() {
+  exportSelection.value = new Set();
+}
+
+// Clips are joined in recording order regardless of the order they were ticked, so the dialog
+// prefills from the earliest one — that is the timecode the joined file actually starts at.
+function earliestSelected() {
+  return [...selectedClips.value].sort((a, b) => a.fileName.localeCompare(b.fileName))[0] || null;
+}
+
+async function openExportDialog() {
+  const first = earliestSelected();
+  if (!first) return;
+
+  exportError.value = null;
+  exportResult.value = null;
+  timecodeUnknown.value = false;
+  exportName.value = "";
+  showExportDialog.value = true;
+
+  // Prefilled from what was really stored when that segment was captured, not recomputed here.
+  try {
+    const query = new URLSearchParams({ sessionFolder: first.sessionFolder, fileName: first.fileName });
+    const response = await fetch(`/api/recordings/start-timecode?${query}`);
+    const result = await response.json();
+    if (response.ok && result.startTimecode) {
+      exportTimecode.value = result.startTimecode;
+    } else {
+      // Nothing recorded for this segment — ask rather than invent a plausible-looking value.
+      exportTimecode.value = "";
+      timecodeUnknown.value = true;
+    }
+  } catch {
+    exportTimecode.value = "";
+    timecodeUnknown.value = true;
+  }
+}
+
+async function runExport() {
+  if (!/^\d{2}:\d{2}:\d{2}:\d{2}$/.test(exportTimecode.value.trim())) {
+    exportError.value = "Timecode must be HH:MM:SS:FF.";
+    return;
+  }
+
+  exportBusy.value = true;
+  exportError.value = null;
+
+  try {
+    const response = await fetch("/api/recordings/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clips: selectedClips.value.map((recording) => ({
+          sessionFolder: recording.sessionFolder,
+          fileName: recording.fileName,
+        })),
+        startTimecode: exportTimecode.value.trim(),
+        outputName: exportName.value.trim() || undefined,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || "Export failed.");
+
+    exportResult.value = result;
+    clearExportSelection();
+  } catch (error) {
+    exportError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    exportBusy.value = false;
+  }
+}
+
 type FolderSummary = {
   name: string;
   clipCount: number;
@@ -74,6 +173,9 @@ const displayedRecordings = computed(() => {
 
 function openFolder(name: string) {
   browsingFolder.value = name;
+  // Selection is scoped to what is on screen — carrying ticks across folders would let an export
+  // include clips the operator can no longer see.
+  clearExportSelection();
 
   const firstClip = props.recordings.find((recording) => recording.sessionFolder === name);
   if (firstClip) emit("select", firstClip.fileName);
@@ -81,6 +183,7 @@ function openFolder(name: string) {
 
 function goHome() {
   browsingFolder.value = null;
+  clearExportSelection();
 }
 
 function formatSize(size: number) {
@@ -119,6 +222,61 @@ const selectedRecording = computed(() => {
         </template>
       </template>
       <span v-else class="crumb active">{{ selectedRecording?.sessionFolder || "--" }}</span>
+
+      <!-- Export controls. Only meaningful once a folder's clips are on screen, so they stay
+           hidden on the folder-cards view where there is nothing tickable. -->
+      <span v-if="displayedRecordings.length" class="export-bar">
+        <span class="export-count">{{ exportSelection.size }} selected</span>
+        <button type="button" class="export-link" @click="selectAllForExport">All</button>
+        <button type="button" class="export-link" :disabled="!exportSelection.size" @click="clearExportSelection">None</button>
+        <button
+          type="button"
+          class="export-action"
+          :disabled="!exportSelection.size"
+          :title="exportSelection.size ? `Join ${exportSelection.size} clip(s) into one timecoded file` : 'Tick clips to export'"
+          @click="openExportDialog"
+        >Export</button>
+      </span>
+    </div>
+
+    <!-- Export dialog -->
+    <div v-if="showExportDialog" class="export-dialog" role="dialog" aria-label="Export clips">
+      <template v-if="!exportResult">
+        <h3>Export {{ selectedClips.length }} clip{{ selectedClips.length === 1 ? "" : "s" }}</h3>
+        <p class="export-hint">
+          Joined in recording order without re-encoding, and stamped with the start timecode below
+          so LiveEdit drops it onto the timeline at the right position.
+        </p>
+        <label class="export-field">
+          <span>Start timecode</span>
+          <input v-model="exportTimecode" placeholder="HH:MM:SS:FF" inputmode="numeric" />
+        </label>
+        <p v-if="timecodeUnknown" class="export-warn">
+          No stored timecode for the first clip — enter one manually.
+        </p>
+        <label class="export-field">
+          <span>File name</span>
+          <input v-model="exportName" placeholder="(auto)" />
+        </label>
+        <p v-if="exportError" class="export-warn">{{ exportError }}</p>
+        <div class="export-buttons">
+          <button type="button" class="export-link" :disabled="exportBusy" @click="showExportDialog = false">Cancel</button>
+          <button type="button" class="export-action" :disabled="exportBusy" @click="runExport">
+            {{ exportBusy ? "Exporting…" : "Export" }}
+          </button>
+        </div>
+      </template>
+      <template v-else>
+        <h3>Export complete</h3>
+        <p class="export-hint">
+          {{ exportResult.fileName }} — {{ exportResult.clipCount }} clip(s) starting at
+          {{ exportResult.startTimecode }}.
+        </p>
+        <div class="export-buttons">
+          <a class="export-action" :href="exportResult.url" download>Download</a>
+          <button type="button" class="export-link" @click="showExportDialog = false">Close</button>
+        </div>
+      </template>
     </div>
 
     <p v-if="enableFolderBrowsing && !browsingFolder && !folders.length" class="empty-browser">
@@ -147,9 +305,17 @@ const selectedRecording = computed(() => {
         v-for="recording in displayedRecordings"
         :key="recording.fileName"
         class="clip-card"
-        :class="{ selected: recording.fileName === selectedFileName }"
+        :class="{ selected: recording.fileName === selectedFileName, ticked: exportSelection.has(recording.fileName) }"
         @click="emit('select', recording.fileName)"
       >
+        <input
+          class="clip-tick"
+          type="checkbox"
+          :checked="exportSelection.has(recording.fileName)"
+          :aria-label="`Select ${recording.fileName} for export`"
+          @click.stop
+          @change="toggleExportSelection(recording.fileName)"
+        />
         <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="blankOnError" />
         <h3>{{ recording.fileName }}</h3>
         <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>
@@ -162,9 +328,17 @@ const selectedRecording = computed(() => {
           v-for="recording in displayedRecordings"
           :key="recording.fileName"
           class="clip-card"
-          :class="{ selected: recording.fileName === selectedFileName }"
+          :class="{ selected: recording.fileName === selectedFileName, ticked: exportSelection.has(recording.fileName) }"
           @click="emit('select', recording.fileName)"
         >
+          <input
+            class="clip-tick"
+            type="checkbox"
+            :checked="exportSelection.has(recording.fileName)"
+            :aria-label="`Select ${recording.fileName} for export`"
+            @click.stop
+            @change="toggleExportSelection(recording.fileName)"
+          />
           <img :src="recording.thumbnailUrl" :alt="recording.fileName" @error="blankOnError" />
           <h3>{{ recording.fileName }}</h3>
           <p>{{ formatSize(recording.size) }} | {{ formatCreatedAt(recording.createdAt) }}</p>

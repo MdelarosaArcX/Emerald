@@ -3,10 +3,11 @@
  * Browsable grid/list of project media assets, used standalone on the
  * Media Browser route and embeddable elsewhere (e.g. import dialogs).
  */
+import AudioWaveformPreview from '@/components/media/AudioWaveformPreview.vue';
 import { useProjectStore } from '@/stores/projectStore';
 import type { MediaAsset } from '@/types/project';
 import { FilmIcon, MusicalNoteIcon, PhotoIcon } from '@heroicons/vue/24/outline';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
 const projectStore = useProjectStore();
 const search = ref('');
@@ -16,6 +17,31 @@ const emit = defineEmits<{
 }>();
 
 const icons = { video: FilmIcon, audio: MusicalNoteIcon, image: PhotoIcon };
+
+const visibleAssets = computed(() =>
+  projectStore.mediaAssets.filter((a) => a.name.toLowerCase().includes(search.value.toLowerCase())),
+);
+
+/**
+ * Previews are held by id rather than by index so a search that re-filters the grid doesn't leave
+ * the registry pointing at whichever asset happens to now occupy that slot.
+ */
+type PreviewHandle = { stop: () => void };
+const previews = ref<Record<string, PreviewHandle | null>>({});
+
+function registerPreview(id: string, instance: unknown): void {
+  previews.value[id] = (instance as PreviewHandle | null) ?? null;
+}
+
+/**
+ * Only one audition at a time — two waveforms playing over each other tells an operator nothing
+ * about either. Started previews announce themselves and every other one is stopped.
+ */
+function stopOtherPreviews(startedId: string): void {
+  for (const [id, preview] of Object.entries(previews.value)) {
+    if (id !== startedId) preview?.stop();
+  }
+}
 
 function formatSize(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
@@ -44,14 +70,33 @@ function formatDuration(seconds: number): string {
     </header>
 
     <div class="grid flex-1 grid-cols-2 items-start gap-3 overflow-y-auto sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-      <button
-        v-for="asset in projectStore.mediaAssets.filter((a) => a.name.toLowerCase().includes(search.toLowerCase()))"
+      <!-- A div rather than a <button>: the audio tiles now carry their own play control, and a
+           button nested inside a button is invalid markup that browsers resolve by dropping one of
+           them. Keyboard activation is wired up explicitly to keep the tile reachable. -->
+      <div
+        v-for="asset in visibleAssets"
         :key="asset.id"
-        class="group flex flex-col overflow-hidden rounded-lg border border-white/5 bg-surface-850/70 text-left transition hover:border-emerald-500/40 hover:shadow-glow"
+        role="button"
+        tabindex="0"
+        class="group flex cursor-pointer flex-col overflow-hidden rounded-lg border border-white/5 bg-surface-850/70 text-left transition hover:border-emerald-500/40 hover:shadow-glow focus:border-emerald-500/40 focus:outline-none"
         @click="emit('select', asset)"
+        @keydown.enter.prevent="emit('select', asset)"
+        @keydown.space.prevent="emit('select', asset)"
       >
         <div class="relative flex aspect-video items-center justify-center bg-black">
-          <component :is="icons[asset.type]" class="h-8 w-8 text-slate-700 transition group-hover:text-emerald-400" />
+          <!-- Audio: the real waveform, auditionable in place. The music-note box it replaces said
+               nothing about the material, which meant loading a take onto the timeline just to find
+               out what was on it. -->
+          <AudioWaveformPreview
+            v-if="asset.type === 'audio'"
+            :ref="(el) => registerPreview(asset.id, el)"
+            :url="asset.path"
+            class="px-2 py-3"
+            color="#34d399"
+            @play="stopOtherPreviews(asset.id)"
+            @click.stop
+          />
+          <component v-else :is="icons[asset.type]" class="h-8 w-8 text-slate-700 transition group-hover:text-emerald-400" />
           <span class="absolute bottom-1 right-1 rounded bg-black/70 px-1 py-0.5 font-mono text-[9px] text-emerald-300">
             {{ formatDuration(asset.duration) }}
           </span>
@@ -61,7 +106,7 @@ function formatDuration(seconds: number): string {
           <p class="text-[10px] text-slate-500">{{ asset.resolution }} · {{ asset.codec }}</p>
           <p class="text-[10px] text-slate-600">{{ formatSize(asset.sizeBytes) }}</p>
         </div>
-      </button>
+      </div>
     </div>
   </section>
 </template>

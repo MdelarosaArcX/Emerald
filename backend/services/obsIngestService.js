@@ -5,7 +5,7 @@ const { normalizeFfmpegPath } = require("./obsRecordingService");
 const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
 const { parseSizeLimit, getDirectorySize, enforceFolderQuota, trimActiveSessionSegments } = require("./storageQuotaService");
 const { logEvent } = require("./eventLogService");
-const { formatWallClockTimecode } = require("./timecodeFormat");
+const { formatWallClockTimecode, timeReferenceSamples } = require("./timecodeFormat");
 const { probeSegment } = require("./segmentProbeService");
 const { createSessionFolder, clamp } = require("./sessionFolder");
 const db = require("../db");
@@ -38,6 +38,17 @@ const TX_LIVE_PLAYLIST_NAME = "emerald-tx-live.m3u8";
 // (standard practice for live HLS) make the first .ts appear within a few seconds instead.
 const TX_HLS_SEGMENT_SECONDS = 4;
 
+// Standalone Broadcast WAV holding the session's audio on its own, alongside the video files.
+// Deliberately *not* segmented like the video legs: BWF carries its timecode in a single bext
+// "time_reference" field describing the start of the file, so one continuous file per session
+// gives an NLE one unambiguous stamp to conform the whole session's audio against picture. A
+// segmented WAV would need a correct stamp per file, which the segment muxer can't write.
+const AUDIO_FILE_NAME = "emerald-audio.wav";
+// 48 kHz is what the SDI embedded audio runs at end to end (see DeltacastSdkService's
+// VHD_ASR_48000 extraction and the "-ar 48000" on every audio leg), and time_reference is counted
+// in samples, so the stamp and the file have to agree on this rate or the audio lands offset.
+const AUDIO_SAMPLE_RATE = 48000;
+
 class ObsIngestService {
   constructor(recordingsPath) {
     this.recordingsPath = recordingsPath;
@@ -66,6 +77,21 @@ class ObsIngestService {
     // `this.process` being nulled, which can happen before the process finishes flushing its
     // last segment during graceful shutdown (stdin "q" + up to 5s grace period).
     this.ffmpegExited = true;
+  }
+
+  // Timecode reads go through these two rather than touching timecodeMaster directly, so this
+  // service still works when constructed standalone (tests, the orphan-playlist watcher) without
+  // a generator client wired in — server.js assigns this.timecodeMaster at boot.
+  timecodeNow() {
+    return this.timecodeMaster ? this.timecodeMaster.currentDate() : new Date();
+  }
+
+  timecodeFrameRate() {
+    return this.timecodeMaster ? this.timecodeMaster.frameRate : 25;
+  }
+
+  timecodeSource() {
+    return this.timecodeMaster ? this.timecodeMaster.status.source : "wallclock";
   }
 
   async start(request) {
@@ -97,9 +123,19 @@ class ObsIngestService {
     const outputPattern = path.join(sessionDir, "emerald-%03d.mp4");
     const txPlaylistPath = path.join(sessionDir, "emerald-tx.m3u8");
     const txSegmentPattern = path.join(sessionDir, "emerald-tx-%03d.ts");
+    const audioOutputPath = path.join(sessionDir, AUDIO_FILE_NAME);
     const { backupDir, backupPath } = resolveBackupDir();
     const recordingSizeLimitBytes = parseSizeLimit(process.env.RECORDING_SIZE_LIMIT);
     const storageSizeLimitBytes = parseSizeLimit(process.env.STORAGE_SIZE_LIMIT);
+
+    // Read the generator's clock once, here, and derive both stamps from that single instant so
+    // the video's tmcd track and the WAV's bext stamp can't disagree by a frame. Taken as late as
+    // possible before spawn — everything above this line is filesystem setup, so the gap between
+    // this read and ffmpeg actually opening its input is as small as it can be.
+    const frameRate = clamp(Number(request.frameRate || this.timecodeFrameRate()), 1, 240);
+    const startInstant = this.timecodeNow();
+    const startTimecode = formatWallClockTimecode(startInstant, frameRate);
+    const audioTimeReference = timeReferenceSamples(startInstant, AUDIO_SAMPLE_RATE);
 
     // Every recording writes three synchronized outputs from the same input in one ffmpeg
     // process: a ProRes 422 MOV for archival (hidden from Media Browser), a stream-copied
@@ -126,6 +162,13 @@ class ObsIngestService {
       "-map", "0:a:0?",
       "-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le",
       "-c:a", "aac", "-b:a", "192k",
+      // Writes a QuickTime tmcd track carrying the generator's timecode, which is what an NLE
+      // reads as the clip's source timecode instead of starting it at 00:00:00:00. Note this is
+      // only correct on segment 000: "-reset_timestamps 1" restarts each subsequent segment's
+      // timeline at zero, so segments 001+ inherit this same start value rather than their own.
+      // The authoritative per-segment timecode is the one reconcileSegments() writes to
+      // RecordingSegment.startTimecode from each file's real creation time.
+      "-timecode", startTimecode,
       // ProRes 422 at 1080p25 is CPU-heavy enough that this encoder can momentarily fall behind
       // real-time under load from everything else running concurrently (capture, previews, TX) —
       // ffmpeg's default 128-packet safety buffer ("Too many packets buffered for output stream")
@@ -149,6 +192,9 @@ class ObsIngestService {
       "-map", "0:a:0?",
       "-c:v", "copy",
       "-c:a", "aac", "-b:a", "192k",
+      // Same tmcd track as the archival leg above, so the playout copy carries the generator's
+      // timecode too — same segment-000-only caveat.
+      "-timecode", startTimecode,
       // Cheap video copy alongside a real audio encode can drift enough under load to overflow
       // ffmpeg's default 128-packet muxer buffer ("Too many packets buffered for output stream"),
       // aborting the whole process — same failure mode observed on the capture preview relay.
@@ -178,6 +224,31 @@ class ObsIngestService {
       "-hls_flags", "independent_segments+append_list",
       "-hls_segment_filename", txSegmentPattern,
       txPlaylistPath,
+
+      // Output 4: the session's audio on its own, as a Broadcast WAV, so audio and video can be
+      // handled as separate files downstream and re-conformed by timecode rather than being
+      // locked together in one container.
+      //
+      // "-write_bext 1" plus "time_reference" (samples since local midnight at the moment
+      // recording started) is the pair an NLE reads to place this file against picture
+      // automatically. PCM rather than MP3 deliberately: MP3 is lossy and its encoder/decoder
+      // delay introduces a variable offset that defeats frame-accurate conform, which is the
+      // whole reason this file exists.
+      //
+      // Caveat worth knowing: this pipeline's audio arrives already AAC-encoded over the UDP
+      // preview stream from FfmpegStreamingService, so this is a decode of lossy audio —
+      // sample-accurate for sync, but not an archival master. The edit-capture pipeline's WAV is
+      // lifted straight off SDI as PCM by VHD_SlotExtractAudio and is the one to use for quality.
+      "-map", "0:a:0?",
+      "-c:a", "pcm_s16le",
+      "-ar", String(AUDIO_SAMPLE_RATE),
+      // Plain WAV tops out at 4GB (32-bit size fields); at 48kHz/16-bit/stereo that's ~6 hours,
+      // which a long session can genuinely exceed. "auto" keeps writing a normal WAV until the
+      // file actually needs RF64's 64-bit sizes, so short sessions stay maximally compatible.
+      "-rf64", "auto",
+      "-write_bext", "1",
+      "-metadata", `time_reference=${audioTimeReference}`,
+      audioOutputPath,
     ];
 
     try {
@@ -261,7 +332,7 @@ class ObsIngestService {
     this.copiedBackupSegments = new Set();
     this.dbSessionId = null;
     this.dbKnownSegments = new Set();
-    this.dbFrameRate = clamp(Number(request.frameRate || 25), 1, 240);
+    this.dbFrameRate = frameRate;
 
     if (backupDir) {
       this.backupDir = backupDir;
@@ -281,7 +352,10 @@ class ObsIngestService {
     db.recordSessionStart({
       folderName: sessionFolderName,
       startedAt: new Date(),
-      startTimecode: formatWallClockTimecode(new Date(), this.dbFrameRate),
+      // The exact same value handed to ffmpeg's -timecode above, not a second reading taken a few
+      // milliseconds later — the DB and the file's tmcd track have to agree to be useful.
+      startTimecode,
+      timecodeSource: this.timecodeSource(),
       frameRate: this.dbFrameRate,
       inputUrl,
       segmentSeconds,
@@ -292,6 +366,13 @@ class ObsIngestService {
       videoCodecPlayout: "h264 (stream copy)",
       audioCodec: "aac",
       audioBitrateKbps: 192,
+      audioFileName: AUDIO_FILE_NAME,
+      // The calibration already baked into this recording's audio by the upstream preview
+      // encoder — this pipeline records that encoder's UDP output, so it inherits the correction
+      // rather than applying one, and this just records which value was in force. Resolved
+      // asynchronously so an unreachable capture service can't delay or fail starting a
+      // recording; a null here means "unknown", not "zero".
+      audioOffsetMs: request.audioOffsetMs ?? null,
       backupPath,
       backupAvailable: Boolean(backupDir),
     })
@@ -461,9 +542,6 @@ class ObsIngestService {
     const finishedSegments = this.ffmpegExited ? segments : segments.slice(0, -1);
     if (finishedSegments.length === 0) return;
 
-    const sessionStartedAt = new Date(this.recordingStatus.startedAt);
-    const segmentSeconds = this.recordingStatus.segmentSeconds || 120;
-
     for (const segment of finishedSegments) {
       if (this.dbKnownSegments.has(segment.index)) continue;
 
@@ -485,10 +563,15 @@ class ObsIngestService {
         // mp4 leg can finish a beat later than mov — picked up on a later tick.
       }
 
-      const startTimecode = formatWallClockTimecode(
-        new Date(sessionStartedAt.getTime() + segment.index * segmentSeconds * 1000),
-        this.dbFrameRate,
-      );
+      // Derived from the segment file's own birthtime rather than the old
+      // sessionStart + index*segmentSeconds arithmetic, which assumed every segment came out at
+      // exactly its nominal length and so drifted away from reality whenever a frame was dropped
+      // upstream. This is the same reasoning the edit-capture path already documents at
+      // editCaptureService.js's own reconciliation. birthtime comes from this machine's clock, so
+      // it goes through timecodeAtLocalInstant to be expressed on the generator's.
+      const startTimecode = this.timecodeMaster
+        ? this.timecodeMaster.timecodeAtLocalInstant(movStat.birthtime)
+        : formatWallClockTimecode(movStat.birthtime, this.dbFrameRate);
 
       let saved;
       try {
@@ -614,6 +697,9 @@ module.exports = {
   ObsIngestService,
   TX_LIVE_PLAYLIST_NAME,
   startOrphanTxPlaylistWatcher,
+  // Exported so the storage quota watchdog can find the backup volume without a recording being
+  // in progress — it needs to police that volume whether or not this service has a session open.
+  resolveBackupDir,
 };
 
 // Builds emerald-tx-live.m3u8's content from whatever emerald-tx-NNN.ts segments exist in

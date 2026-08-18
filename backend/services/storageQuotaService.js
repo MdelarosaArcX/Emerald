@@ -49,11 +49,49 @@ async function getDirectorySize(dirPath) {
   return total;
 }
 
+// Folder names that must never be evicted even when they sit inside a legitimate quota root.
+// Windows creates these at the top level of every volume and they are not ours to delete; they
+// also don't start with "." so the dot-prefix rule below doesn't cover them.
+const PROTECTED_FOLDER_NAMES = new Set([
+  "$recycle.bin",
+  "system volume information",
+  "recovery",
+  "$windows.~bt",
+  "$windows.~ws",
+]);
+
+/**
+ * Refuses to treat a filesystem root ("E:\", "C:\", "/") as a quota root.
+ *
+ * This function deletes whole top-level folders, so pointing it at a drive root would evict
+ * everything on that drive that isn't the active session — including unrelated data and Windows'
+ * own volume folders. That is reachable by configuration alone: EMERALD_BACKUP_PATH defaults to
+ * "E:\" when unset, so a missing line in .env is the only thing standing between normal operation
+ * and deleting the contents of a drive. A quota is not worth that, so an unusable root is treated
+ * as "no quota" instead.
+ */
+function isSafeQuotaRoot(rootDir) {
+  if (!rootDir || typeof rootDir !== "string") return false;
+
+  const resolved = path.resolve(rootDir);
+  if (resolved === path.parse(resolved).root) {
+    console.error(
+      `Refusing to enforce a storage quota on '${resolved}' because it is a drive/filesystem root — `
+      + "this would delete unrelated top-level folders. Point EMERALD_BACKUP_PATH at a dedicated "
+      + "subfolder (e.g. E:\\Emerald).",
+    );
+    return false;
+  }
+
+  return true;
+}
+
 // Deletes whole session subfolders of `rootDir`, oldest first, until the total size of
 // its non-dot subfolders is back under `limitBytes`. Never deletes `excludeFolderName`
 // (the in-progress recording session). No-op when `limitBytes` is 0 (unlimited).
 async function enforceFolderQuota(rootDir, limitBytes, excludeFolderName) {
   if (!limitBytes) return;
+  if (!isSafeQuotaRoot(rootDir)) return;
 
   let entries;
   try {
@@ -63,7 +101,9 @@ async function enforceFolderQuota(rootDir, limitBytes, excludeFolderName) {
   }
 
   const folderNames = entries
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .filter((entry) => entry.isDirectory()
+      && !entry.name.startsWith(".")
+      && !PROTECTED_FOLDER_NAMES.has(entry.name.toLowerCase()))
     .map((entry) => entry.name);
 
   const folders = await Promise.all(folderNames.map(async (name) => {
