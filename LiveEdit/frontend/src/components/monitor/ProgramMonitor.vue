@@ -323,14 +323,14 @@ onBeforeUnmount(pause);
       <div class="font-mono text-3xl font-semibold tracking-widest text-slate-100" style="text-shadow: 0 0 18px rgba(23,228,219,0.35)">
         {{ timecode }}
       </div>
-      <span class="absolute right-0 text-[10px] uppercase tracking-widest text-slate-500">{{ fps.toFixed(2) }} fps</span>
+      <span class="absolute right-0 text-[0.625rem] uppercase tracking-widest text-slate-500">{{ fps.toFixed(2) }} fps</span>
     </header>
 
     <div class="relative flex min-h-0 flex-1 items-stretch gap-2 overflow-hidden rounded-lg border border-white/5 bg-black">
       <div class="flex w-9 shrink-0 flex-col items-center border-r border-white/5 bg-surface-900/60 py-3">
         <AudioMeter class="flex-1" :level="meterLevel" />
-        <div class="mt-1 flex gap-[3px] font-mono text-[7px] leading-none text-slate-600"><span>3</span><span>3</span><span>3</span><span>3</span></div>
-        <div class="flex gap-[3px] font-mono text-[7px] leading-none text-slate-600"><span>dB</span><span>dB</span></div>
+        <div class="mt-1 flex gap-[0.1875rem] font-mono text-[0.4375rem] leading-none text-slate-600"><span>3</span><span>3</span><span>3</span><span>3</span></div>
+        <div class="flex gap-[0.1875rem] font-mono text-[0.4375rem] leading-none text-slate-600"><span>dB</span><span>dB</span></div>
       </div>
 
       <div ref="frameRef" class="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-black">
@@ -359,21 +359,21 @@ onBeforeUnmount(pause);
 
         <!-- Overlays -->
         <div v-if="active && activeEffects.length" class="pointer-events-none absolute left-2 top-2 flex max-w-[70%] flex-wrap gap-1">
-          <span v-for="fx in activeEffects" :key="fx" class="rounded bg-emerald-500/25 px-1.5 py-0.5 text-[9px] font-medium text-emerald-200 backdrop-blur">{{ fx }}</span>
+          <span v-for="fx in activeEffects" :key="fx" class="rounded bg-emerald-500/25 px-1.5 py-0.5 text-[0.5625rem] font-medium text-emerald-200 backdrop-blur">{{ fx }}</span>
         </div>
         <div v-if="active" class="pointer-events-none absolute right-2 top-2 flex items-center gap-1">
-          <span v-if="(active.clip.opacity ?? 100) < 100" class="rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-slate-200 backdrop-blur">Opacity {{ active.clip.opacity }}%</span>
-          <span v-if="activeMuted" class="rounded bg-rose-500/25 px-1.5 py-0.5 text-[9px] font-medium text-rose-300 backdrop-blur">MUTED</span>
+          <span v-if="(active.clip.opacity ?? 100) < 100" class="rounded bg-black/60 px-1.5 py-0.5 text-[0.5625rem] text-slate-200 backdrop-blur">Opacity {{ active.clip.opacity }}%</span>
+          <span v-if="activeMuted" class="rounded bg-rose-500/25 px-1.5 py-0.5 text-[0.5625rem] font-medium text-rose-300 backdrop-blur">MUTED</span>
         </div>
-        <div v-if="proxyLoading" class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-slate-200 backdrop-blur">
+        <div v-if="proxyLoading" class="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[0.625rem] text-slate-200 backdrop-blur">
           Preparing preview…
         </div>
       </div>
 
       <div class="flex w-9 shrink-0 flex-col items-center border-l border-white/5 bg-surface-900/60 py-3">
         <AudioMeter class="flex-1" :level="meterLevel" />
-        <div class="mt-1 flex gap-[3px] font-mono text-[7px] leading-none text-slate-600"><span>3</span><span>3</span><span>3</span><span>3</span></div>
-        <div class="flex gap-[3px] font-mono text-[7px] leading-none text-slate-600"><span>dB</span><span>dB</span></div>
+        <div class="mt-1 flex gap-[0.1875rem] font-mono text-[0.4375rem] leading-none text-slate-600"><span>3</span><span>3</span><span>3</span><span>3</span></div>
+        <div class="flex gap-[0.1875rem] font-mono text-[0.4375rem] leading-none text-slate-600"><span>dB</span><span>dB</span></div>
       </div>
     </div>
 

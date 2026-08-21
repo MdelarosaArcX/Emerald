@@ -4,6 +4,7 @@
  * height resize) rendered by the parent header column, and this component's
  * body renders the clip strip for that track.
  */
+import { useProjectStore } from '@/stores/projectStore';
 import TimelineClip from '@/components/timeline/TimelineClip.vue';
 import { useTimelineStore } from '@/stores/timelineStore';
 import type { Track } from '@/types/clip';
@@ -15,7 +16,10 @@ const props = defineProps<{
 }>();
 
 const timelineStore = useTimelineStore();
+const projectStore = useProjectStore();
 const dragOver = ref(false);
+/** True while the drag in progress carries OS files rather than an asset from a browser panel. */
+const importing = ref(false);
 
 function onClipChange(clipId: string, payload: { start: number; duration: number }): void {
   timelineStore.updateClip(clipId, payload);
@@ -31,6 +35,20 @@ function onDragOver(event: DragEvent): void {
 async function onDrop(event: DragEvent): Promise<void> {
   dragOver.value = false;
   if (props.track.locked) return;
+
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const droppedFrame = Math.max(0, Math.round((event.clientX - rect.left) / props.pixelsPerFrame));
+
+  // Files dragged in from the desktop are imported first and then inserted, so a file goes from
+  // Explorer to the timeline in one gesture. The measurement above happens before any awaiting:
+  // the DragEvent's coordinates are only meaningful while the event is being handled.
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  if (files.length) {
+    event.preventDefault();
+    await importAndInsert(files, droppedFrame);
+    return;
+  }
+
   const raw = event.dataTransfer?.getData('application/x-emerald-clip');
   if (!raw) return;
   event.preventDefault();
@@ -41,9 +59,6 @@ async function onDrop(event: DragEvent): Promise<void> {
   } catch {
     return;
   }
-
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-  const droppedFrame = Math.max(0, Math.round((event.clientX - rect.left) / props.pixelsPerFrame));
 
   // A source that carries its own timecode is placed at that timecode rather than where the
   // pointer happened to land. Emerald's clip export stamps one (a QuickTime tmcd track), which is
@@ -64,6 +79,46 @@ async function onDrop(event: DragEvent): Promise<void> {
     kind: props.track.kind === 'audio' ? 'audio' : 'video',
     hasAudio: data.hasAudio,
   });
+}
+
+/**
+ * Imports desktop files into the project library, then lays them onto this track from the drop
+ * point, each one starting where the previous ended.
+ *
+ * Laid end to end rather than all at the drop frame because a multi-file drop is a request for a
+ * sequence — stacking them on one frame would hide every file but the last behind the others.
+ *
+ * Unlike the asset path below, no timecode lookup is attempted: an imported file's embedded
+ * timecode (if any) refers to whatever system recorded it, and honouring it would fling the clip
+ * to an unrelated part of the timeline instead of where it was dropped.
+ */
+async function importAndInsert(files: File[], startFrame: number): Promise<void> {
+  importing.value = true;
+  try {
+    const assets = await projectStore.importFiles(files);
+    let frame = startFrame;
+
+    for (const asset of assets) {
+      // Stills have no duration of their own; they get a default so they are visible and
+      // trimmable rather than landing as a zero-width clip.
+      const durationFrames = Math.max(1, Math.round((asset.duration || 5) * timelineStore.fps));
+
+      timelineStore.addClipFromSource({
+        name: asset.name,
+        url: asset.path,
+        thumbnail: asset.thumbnail,
+        durationFrames,
+        trackId: props.track.id,
+        startFrame: frame,
+        kind: props.track.kind === 'audio' ? 'audio' : 'video',
+        hasAudio: asset.hasAudio,
+      });
+
+      frame += durationFrames;
+    }
+  } finally {
+    importing.value = false;
+  }
 }
 
 /**
@@ -114,12 +169,22 @@ async function fetchSourceTimecodeFrame(url: string, fps: number): Promise<numbe
       class="pointer-events-none absolute inset-0 z-10"
       style="background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0 8px, transparent 8px 16px)"
     />
+    <!-- A dropped file can take a while to upload and probe, and until it does the lane looks
+         exactly as it did before the drop. -->
+    <div
+      v-if="importing"
+      class="pointer-events-none absolute inset-1 z-20 flex items-center justify-center rounded-md border border-dashed border-emerald-400/50 bg-emerald-400/[0.07]"
+    >
+      <span class="rounded bg-emerald-500/20 px-2 py-0.5 text-[0.625rem] font-medium tracking-wide text-emerald-200">
+        Importing…
+      </span>
+    </div>
     <!-- Empty-lane drop affordance -->
     <div
-      v-if="!track.clips.length"
+      v-if="!track.clips.length && !importing"
       class="pointer-events-none absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-rose-500/30 bg-rose-500/[0.04]"
     >
-      <span class="rounded bg-rose-500/15 px-2 py-0.5 text-[10px] font-medium tracking-wide text-rose-300/80">Drop media to Insert</span>
+      <span class="rounded bg-rose-500/15 px-2 py-0.5 text-[0.625rem] font-medium tracking-wide text-rose-300/80">Drop media to Insert</span>
     </div>
     <TimelineClip
       v-for="clip in track.clips"

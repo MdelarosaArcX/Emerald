@@ -22,22 +22,22 @@ const now = new Date().toISOString();
 // timelineStore.appendCaptureSegment); the operator can still add more lanes on demand (+V / +A).
 const videoTracks: Track[] = [
   {
-    id: 'v2', name: 'V2', kind: 'video', order: 0, height: 72, locked: false, visible: true, muted: false, solo: false,
+    id: 'v2', name: 'V2', kind: 'video', order: 0, height: 58, locked: false, visible: true, muted: false, solo: false,
     clips: [],
   },
   {
-    id: 'v1', name: 'V1', kind: 'video', order: 1, height: 72, locked: false, visible: true, muted: false, solo: false,
+    id: 'v1', name: 'V1', kind: 'video', order: 1, height: 58, locked: false, visible: true, muted: false, solo: false,
     clips: [],
   },
 ];
 
 const audioTracks: Track[] = [
   {
-    id: 'a1', name: 'A1', kind: 'audio', order: 2, height: 56, locked: false, visible: true, muted: false, solo: false,
+    id: 'a1', name: 'A1', kind: 'audio', order: 2, height: 45, locked: false, visible: true, muted: false, solo: false,
     clips: [],
   },
   {
-    id: 'a2', name: 'A2', kind: 'audio', order: 3, height: 56, locked: false, visible: true, muted: false, solo: false,
+    id: 'a2', name: 'A2', kind: 'audio', order: 3, height: 45, locked: false, visible: true, muted: false, solo: false,
     clips: [],
   },
 ];

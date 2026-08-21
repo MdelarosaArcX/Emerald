@@ -6,6 +6,7 @@ import path from 'path';
 import ffmpegStatic from 'ffmpeg-static';
 import { logger } from '../utils/logger';
 import { LOCAL_EXPORTS_AVAILABLE, LOCAL_EXPORTS_PATH, LOCAL_RECORDINGS_AVAILABLE, LOCAL_RECORDINGS_PATH } from '../utils/localRecordings';
+import { IMPORT_DIR } from '../utils/mediaPaths';
 
 /**
  * Media pipeline: generates lightweight, browser-playable proxies of the (non-faststart, large)
@@ -13,7 +14,10 @@ import { LOCAL_EXPORTS_AVAILABLE, LOCAL_EXPORTS_PATH, LOCAL_RECORDINGS_AVAILABLE
  * segments directly from the Emerald backend over HTTP, so this works without local file access.
  */
 
-const FFMPEG = (ffmpegStatic as unknown as string) || 'ffmpeg';
+// Exported so media.controller extracts poster frames with the same binary this resolves, rather
+// than duplicating the static-package lookup and risking the two disagreeing.
+export const FFMPEG_FOR_THUMBS = (ffmpegStatic as unknown as string) || 'ffmpeg';
+const FFMPEG = FFMPEG_FOR_THUMBS;
 
 const CACHE_ROOT = path.resolve(process.cwd(), '.media-cache');
 export const PROXY_DIR = path.join(CACHE_ROOT, 'proxies');
@@ -100,6 +104,11 @@ function resolveReadableSource(url: string): string {
   const roots: Array<{ pattern: RegExp; root: string | null; available: boolean }> = [
     { pattern: /^\/(?:recordings|local-recordings)\/(.+)$/, root: LOCAL_RECORDINGS_PATH, available: LOCAL_RECORDINGS_AVAILABLE },
     { pattern: /^\/exports\/(.+)$/, root: LOCAL_EXPORTS_PATH, available: LOCAL_EXPORTS_AVAILABLE },
+    // Imported media is always local — this process wrote it — so unlike the two mounts above
+    // there is no availability flag to check. Without this entry, proxying or reading a waveform
+    // from an import would fetch it back over HTTP from whichever origin is serving the frontend,
+    // which in the split deployment the backend may not be able to reach at all.
+    { pattern: /^\/media-imports\/(.+)$/, root: IMPORT_DIR, available: true },
   ];
 
   const mount = roots.find((candidate) => candidate.available && candidate.root && candidate.pattern.test(pathname));
@@ -216,7 +225,9 @@ export async function requestWaveform(req: Request, res: Response): Promise<void
 
 // --- Source timecode ---------------------------------------------------------------------------
 
-const FFPROBE = (() => {
+// Exported so media.controller probes imports with the same binary this resolves, rather than
+// duplicating the static-package lookup and risking the two disagreeing.
+export const FFPROBE = (() => {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const probe = require('ffprobe-static');

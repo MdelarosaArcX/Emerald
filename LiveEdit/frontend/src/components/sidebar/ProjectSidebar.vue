@@ -38,7 +38,7 @@ const links = [
     >
       <component :is="link.icon" class="h-5 w-5" />
       <span
-        class="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-md border border-white/5 bg-surface-800 px-2 py-1 text-[11px] text-slate-200 opacity-0 shadow-panel transition group-hover:opacity-100"
+        class="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-md border border-white/5 bg-surface-800 px-2 py-1 text-[0.6875rem] text-slate-200 opacity-0 shadow-panel transition group-hover:opacity-100"
       >
         {{ link.label }}
       </span>
@@ -49,7 +49,7 @@ const links = [
         class="h-1.5 w-1.5 rounded-full"
         :class="projectStore.status.connected ? 'bg-emerald-400 animate-pulseGlow' : 'bg-rose-500'"
       />
-      <span class="text-[9px] text-slate-600">v1.0</span>
+      <span class="text-[0.5625rem] text-slate-600">v1.0</span>
     </div>
   </nav>
 </template>

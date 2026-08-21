@@ -127,6 +127,12 @@ onUnmounted(() => {
         </span>
         <span v-if="captureHealth.data?.capture.sdiInterface" class="status-subtext">{{ captureHealth.data.capture.sdiInterface }}</span>
       </div>
+      <!-- Only while capture is down: this is the reason the Capture preview is black, which is
+           otherwise indistinguishable in the browser from a preview that simply hasn't started. -->
+      <p
+        v-if="!captureHealth.data?.capture.isCapturing && captureHealth.data?.capture.lastMessage"
+        class="status-subtext status-reason"
+      >{{ captureHealth.data.capture.lastMessage }}</p>
     </div>
 
     <div class="status-card">

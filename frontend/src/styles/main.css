@@ -302,6 +302,14 @@ a {
   font-size: 0.8rem;
 }
 
+/* A fault reason rather than a passive label — full sentences that need to wrap, and warm enough
+   to read as "this is why nothing is on screen" next to the red status dot it sits under. */
+.status-reason {
+  margin: 0.35rem 0 0;
+  color: rgba(255, 154, 118, 0.85);
+  line-height: 1.35;
+}
+
 .status-timecode {
   font-family: "Michroma", "Rajdhani", "Eurostile", "Segoe UI", system-ui, sans-serif;
   color: #35f0b1;

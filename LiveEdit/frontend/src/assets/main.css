@@ -3,6 +3,25 @@
 @tailwind utilities;
 
 @layer base {
+  /**
+   * UI scale. Every size in this app — Tailwind's text, padding, gap, width and height utilities,
+   * and the arbitrary values alongside them — is expressed in rem, so this one number sets how
+   * large the whole interface renders. 80% is a 20% reduction from the browser default.
+   *
+   * Done here rather than by editing each utility because the alternative is hundreds of
+   * individually chosen sizes that then have no relationship to each other, and no way back: a
+   * second opinion on the density means another sweep. This stays one number.
+   *
+   * Deliberately not `zoom` or a transform on the root. Those scale the coordinate system itself,
+   * and the timeline converts pointer positions to frames against a pixelsPerFrame value held in
+   * JS (see TimelineTrack's drop handler and TimelineClip's drag maths) — under a zoom, every
+   * clip drag, trim and drop would land at the wrong frame. Changing the rem base leaves 1 CSS
+   * pixel as 1 CSS pixel, so none of that arithmetic shifts.
+   */
+  html {
+    font-size: 80%;
+  }
+
   html,
   body,
   #app {
@@ -20,8 +39,8 @@
 
 @layer utilities {
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 0.5rem;
+    height: 0.5rem;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
@@ -37,7 +56,7 @@
 input[type='range'] {
   -webkit-appearance: none;
   appearance: none;
-  height: 3px;
+  height: 0.1875rem;
   background: rgba(255, 255, 255, 0.1);
   border-radius: 999px;
 }
@@ -45,8 +64,8 @@ input[type='range'] {
 input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
   border-radius: 999px;
   background: currentColor;
   cursor: pointer;
@@ -54,8 +73,8 @@ input[type='range']::-webkit-slider-thumb {
 }
 
 input[type='range']::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
   border: none;
   border-radius: 999px;
   background: currentColor;

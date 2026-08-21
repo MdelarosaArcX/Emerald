@@ -25,6 +25,16 @@ let liveSyncTimer: number | null = null;
  */
 let liveSyncInFlight = false;
 
+/**
+ * Source keys of live segments the operator has removed from the timeline.
+ *
+ * The backfill poll re-reads the whole recording session every few seconds and has no memory of
+ * what was deliberately taken off the timeline — without this, deleting a live segment (or cutting
+ * one from air) would see it reappear on the very next tick. Module-level rather than in state
+ * because it is bookkeeping for the sync, not something any view renders.
+ */
+const dismissedLiveKeys = new Set<string>();
+
 interface TimelineState {
   timeline: Timeline | null;
   selectedClipId: string | null;
@@ -224,6 +234,10 @@ export const useTimelineStore = defineStore('timeline', {
         durationSeconds: payload.durationSeconds,
         createdAt: payload.createdAt,
         hasAudio: payload.hasAudio,
+        // Must match runLiveSync's key exactly — this payload names the segment by the LiveEdit
+        // proxy it generated, the poll names it by Emerald's own URL, and folder/fileName is the
+        // only thing the two have in common.
+        sourceKey: `${payload.folder}/${payload.fileName}`,
       });
 
       // Bring the newly-landed segment into view — see pendingScrollFrame's doc comment. Only for
@@ -251,13 +265,41 @@ export const useTimelineStore = defineStore('timeline', {
       createdAt: string;
       hasAudio: boolean;
       thumbnail?: string;
+      /** `folder/fileName` — see Clip.sourceKey. Both arrival routes must derive this the same way. */
+      sourceKey?: string;
     }): number | null {
       if (!this.timeline) {
         console.warn('Ignoring capture segment: timeline has not loaded yet.', payload);
         return null;
       }
 
-      if (this.allClips.some((c) => c.path === payload.url)) return null;
+      // Identity first, URL only as a fallback for callers that have no key. The two routes a
+      // segment arrives by (socket feed and backfill poll) serve the same file from different
+      // hosts under different paths, so matching on URL let every segment through twice.
+      const existing = payload.sourceKey
+        ? this.allClips.find((c) => c.sourceKey === payload.sourceKey)
+        : this.allClips.find((c) => c.path === payload.url);
+
+      if (existing) {
+        // The socket payload has no thumbnail and the backfill does, so whichever arrives second
+        // is allowed to fill in what the first could not supply. Without this, a segment announced
+        // over the socket stayed a blank block for the rest of the session even though the poll
+        // later learned its thumbnail.
+        if (!existing.thumbnail && payload.thumbnail) {
+          for (const track of this.timeline.tracks) {
+            for (const clip of track.clips) {
+              if (clip.sourceKey === payload.sourceKey && !clip.thumbnail && clip.type !== 'audio') {
+                clip.thumbnail = payload.thumbnail;
+              }
+            }
+          }
+        }
+        return null;
+      }
+
+      // A live segment the operator deliberately removed — most often by cutting it from air —
+      // must not be resurrected by the next backfill poll, which has no idea it was ever there.
+      if (payload.sourceKey && dismissedLiveKeys.has(payload.sourceKey)) return null;
 
       let track = this.videoTracks.find((t) => t.kind === 'video');
       if (!track) {
@@ -293,6 +335,7 @@ export const useTimelineStore = defineStore('timeline', {
         startFrame,
         hasAudio: payload.hasAudio,
         live: true,
+        sourceKey: payload.sourceKey,
       });
 
       return startFrame;
@@ -348,6 +391,8 @@ export const useTimelineStore = defineStore('timeline', {
           createdAt: clip.createdAt,
           hasAudio: clip.hasAudio !== false,
           thumbnail: clip.thumbnailUrl ?? undefined,
+          // Same key the socket route derives — see appendCaptureSegment.
+          sourceKey: `${clip.sessionFolder}/${clip.fileName}`,
         });
       }
 
@@ -435,8 +480,8 @@ export const useTimelineStore = defineStore('timeline', {
         duration,
         playhead: 0,
         tracks: [
-          { id: 'v1', name: 'V1', kind: 'video', order: 0, height: 76, locked: false, visible: true, muted: false, solo: false, clips: [videoClip] },
-          { id: 'a1', name: 'A1', kind: 'audio', order: 1, height: 60, locked: false, visible: true, muted: false, solo: false, clips: includeAudio ? [audioClip] : [] },
+          { id: 'v1', name: 'V1', kind: 'video', order: 0, height: 61, locked: false, visible: true, muted: false, solo: false, clips: [videoClip] },
+          { id: 'a1', name: 'A1', kind: 'audio', order: 1, height: 48, locked: false, visible: true, muted: false, solo: false, clips: includeAudio ? [audioClip] : [] },
         ],
       };
       this.selectedClipId = 'program-clip';
@@ -466,6 +511,8 @@ export const useTimelineStore = defineStore('timeline', {
       hasAudio?: boolean;
       /** Set by appendCaptureSegment for material coming off the live recorder — see Clip.live. */
       live?: boolean;
+      /** Stable segment identity, carried onto the clip so both arrival routes dedupe on it. */
+      sourceKey?: string;
     }): string | null {
       const track = this.timeline?.tracks.find((t) => t.id === payload.trackId);
       if (!this.timeline || !track || track.locked) return null;
@@ -495,6 +542,7 @@ export const useTimelineStore = defineStore('timeline', {
         volume: 100,
         locked: false,
         live: payload.live,
+        sourceKey: payload.sourceKey,
       };
       track.clips.push(clip);
       this.timeline.duration = Math.max(this.timeline.duration, clip.start + clip.duration);
@@ -565,7 +613,16 @@ export const useTimelineStore = defineStore('timeline', {
       for (const track of this.timeline.tracks) {
         const idx = track.clips.findIndex((c) => c.id === clipId);
         if (idx !== -1) {
-          track.clips.splice(idx, 1);
+          const [removed] = track.clips.splice(idx, 1);
+
+          // Remember a removed live segment, but only once no piece of it is left: splitting a
+          // segment and deleting one half is still an edit of material that belongs on the
+          // timeline, and marking the whole source dismissed would stop the sync from ever
+          // restoring it after a reload.
+          if (removed?.sourceKey && !this.allClips.some((c) => c.sourceKey === removed.sourceKey)) {
+            dismissedLiveKeys.add(removed.sourceKey);
+          }
+
           if (this.selectedClipId === clipId) this.selectedClipId = null;
           return;
         }
@@ -610,7 +667,7 @@ export const useTimelineStore = defineStore('timeline', {
 
     resizeTrackHeight(trackId: string, height: number): void {
       const track = this.timeline?.tracks.find((t) => t.id === trackId);
-      if (track) track.height = Math.max(32, Math.min(200, height));
+      if (track) track.height = Math.max(26, Math.min(160, height));
     },
 
     setZoom(zoom: number): void {
@@ -648,7 +705,7 @@ export const useTimelineStore = defineStore('timeline', {
         name: `${prefix}${sameKind.length + 1}`,
         kind: isAudio ? 'audio' : 'video',
         order,
-        height: isAudio ? 56 : 72,
+        height: isAudio ? 45 : 58,
         locked: false,
         visible: true,
         muted: false,

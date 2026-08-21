@@ -26,7 +26,7 @@ const tabs: { id: LeftTab; label: string }[] = [
         <button
           v-for="tab in tabs"
           :key="tab.id"
-          class="flex flex-1 items-center justify-center rounded-l-md border-l-2 text-[11px] font-semibold uppercase tracking-widest transition"
+          class="flex flex-1 items-center justify-center rounded-l-md border-l-2 text-[0.6875rem] font-semibold uppercase tracking-widest transition"
           :class="activeTab === tab.id
             ? 'border-[#5b6ee5] bg-[#5b6ee5] text-white shadow-glow-teal'
             : 'border-white/10 bg-white/5 text-slate-400 hover:text-slate-200'"

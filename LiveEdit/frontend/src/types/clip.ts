@@ -40,6 +40,20 @@ export interface Clip {
    * material — it describes where the footage came from, not how it has been edited since.
    */
   live?: boolean;
+  /**
+   * Stable identity of the captured segment this clip came from, as `folder/fileName`.
+   *
+   * Exists because a segment reaches the timeline by two routes that name the same file
+   * differently: the socket feed carries the LiveEdit backend's generated proxy URL, while the
+   * backfill poll carries Emerald's own recordings URL. Deduplicating on `path` therefore never
+   * matched across the two, and every automatically-added segment landed twice — once from each
+   * route, the socket copy without a thumbnail because that payload has none. This is the one
+   * value both routes agree on.
+   *
+   * Survives splitting and trimming, like `live`: the pieces are still that same source segment,
+   * and the backfill must not re-add a segment just because it has since been cut up.
+   */
+  sourceKey?: string;
 }
 
 /** A timeline track (video, audio, or fx lane). */

@@ -59,7 +59,7 @@ defineExpose({ push });
         <component :is="icons[n.level]" class="mt-0.5 h-4 w-4 shrink-0" />
         <div class="flex-1">
           <p class="text-xs font-semibold text-slate-100">{{ n.title }}</p>
-          <p v-if="n.message" class="mt-0.5 text-[11px] text-slate-400">{{ n.message }}</p>
+          <p v-if="n.message" class="mt-0.5 text-[0.6875rem] text-slate-400">{{ n.message }}</p>
         </div>
         <button class="text-slate-500 hover:text-slate-300" @click="dismiss(n.id)">
           <XMarkIcon class="h-3.5 w-3.5" />

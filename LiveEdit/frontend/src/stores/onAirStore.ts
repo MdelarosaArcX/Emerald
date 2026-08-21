@@ -1,4 +1,4 @@
-import { fetchEmeraldTimecode } from '@/services/emeraldPreview';
+import { cutFromAir, fetchAirEdl, fetchEmeraldTimecode, restoreAirCut, type AirEdlState } from '@/services/emeraldPreview';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { defineStore } from 'pinia';
 
@@ -48,6 +48,26 @@ interface OnAirState {
   startedAt: string | null;
   broadcastDelaySeconds: number;
   fps: number;
+  /**
+   * Freeze: the operator has parked the view to work ahead of air.
+   *
+   * Air does not stop — nothing here can stop it. What stops is this store moving the playhead and
+   * the viewport. Polling, `currentFrame`, and the on-air band all keep advancing exactly as
+   * before, so the red band visibly grows toward the held playhead while the operator cuts the
+   * material it is about to reach.
+   *
+   * This is the whole point of the broadcast delay (see Emerald's writeTxPlaylist, which holds
+   * segments back until they are `broadcastDelaySeconds` old): the gap between captured and aired
+   * is an editing window, and it can only be used if the editor will sit still inside it.
+   */
+  frozen: boolean;
+  /** Playhead frame at the moment of freezing — where the operator went to work. */
+  frozenAtFrame: number | null;
+  /** What Emerald says about the editable window: cuts committed and delay left to spend. */
+  airEdl: AirEdlState;
+  /** Why the last cut was refused, for the operator to read. Cleared on the next attempt. */
+  lastCutError: string | null;
+  cutting: boolean;
 }
 
 /** Frames since local midnight for an HH:MM:SS:FF time-of-day timecode. */
@@ -68,6 +88,14 @@ export const useOnAirStore = defineStore('onAir', {
     startedAt: null,
     broadcastDelaySeconds: 0,
     fps: 25,
+    // Never restored from storage, unlike `following`. Freezing is a deliberate act taken against
+    // a particular moment in a particular transmission; silently resuming it after a refresh would
+    // leave an operator watching a stationary playhead with no memory of why.
+    frozen: false,
+    frozenAtFrame: null,
+    airEdl: { active: false, cuts: [], spentSeconds: 0, remainingDelaySeconds: 0 },
+    lastCutError: null,
+    cutting: false,
   }),
 
   getters: {
@@ -78,11 +106,75 @@ export const useOnAirStore = defineStore('onAir', {
       state.currentFrame !== null && state.startedFrame !== null
         ? Math.max(0, state.currentFrame - state.startedFrame)
         : 0,
+
+    /** True while frozen and air is genuinely running — i.e. the editing window is live. */
+    freezeActive: (state): boolean => state.frozen && state.following && state.transmitting,
+
+    /**
+     * Frames between what is going out right now and where the operator is working. Negative once
+     * air has passed the held position, which is the state that matters most: the material under
+     * the playhead has already gone out and editing it can no longer change what airs.
+     */
+    framesAheadOfAir(state): number | null {
+      if (state.frozenAtFrame === null || state.currentFrame === null) return null;
+      return state.frozenAtFrame - state.currentFrame;
+    },
+
+    /**
+     * The editing runway, in frames: how much delay is left between air and the end of what has
+     * been captured. Cutting spends this (see the ripple model in Emerald's air EDL), so it is the
+     * number that decides whether another cut is affordable.
+     */
+    delayFrames: (state): number => Math.round(state.broadcastDelaySeconds * state.fps),
+
+    /** Seconds until air reaches the frozen playhead, or null when not frozen / already passed. */
+    secondsUntilAirReachesFreeze(): number | null {
+      const ahead = this.framesAheadOfAir;
+      if (ahead === null || ahead <= 0) return null;
+      return ahead / this.fps;
+    },
   },
 
   actions: {
     toggleFollow(): void {
       this.setFollowing(!this.following);
+    },
+
+    toggleFreeze(): void {
+      if (this.frozen) this.unfreeze();
+      else this.freeze();
+    },
+
+    /**
+     * Stop the view at the current playhead so the operator can work ahead of air.
+     *
+     * The freeze point is taken from the timeline's playhead rather than from `currentFrame`: by
+     * the time this runs the operator may already have scrubbed forward to the scene they intend
+     * to cut, and snapping them back to air would undo that.
+     */
+    freeze(): void {
+      if (!this.following) return;
+      const timeline = useTimelineStore();
+      this.frozen = true;
+      this.frozenAtFrame = timeline.playhead;
+    },
+
+    /**
+     * Resume following, and go straight back to air.
+     *
+     * Air is where the operator needs to be looking the moment they stop editing ahead of it, and
+     * after a freeze the held playhead can be minutes away — leaving them parked there and merely
+     * "unpaused" would show a stationary picture that looks like following is broken.
+     */
+    unfreeze(): void {
+      this.frozen = false;
+      this.frozenAtFrame = null;
+
+      if (this.currentFrame !== null) {
+        const timeline = useTimelineStore();
+        timeline.setPlayhead(this.currentFrame, false);
+        timeline.pendingScrollFrame = this.currentFrame;
+      }
     },
 
     setFollowing(value: boolean): void {
@@ -100,6 +192,10 @@ export const useOnAirStore = defineStore('onAir', {
         this.currentFrame = null;
         this.startedFrame = null;
         this.startedAt = null;
+        // A freeze only means anything relative to a moving air point. Left set, it would suppress
+        // playhead updates again the moment following was re-engaged, for no visible reason.
+        this.frozen = false;
+        this.frozenAtFrame = null;
       }
     },
 
@@ -123,6 +219,11 @@ export const useOnAirStore = defineStore('onAir', {
 
       this.reachable = true;
       this.fps = Math.max(1, Math.round(status.fps || 25));
+
+      // Polled alongside air rather than on its own timer: the delay budget only changes when a
+      // cut is made or the transmission moves, and both are already reflected here. Not awaited —
+      // a slow EDL read must not hold up the playhead update this poll exists for.
+      void this.refreshAirEdl();
       this.transmitting = status.onAir.isTransmitting;
       this.broadcastDelaySeconds = status.onAir.broadcastDelaySeconds ?? 0;
       this.startedAt = status.onAir.startedAt;
@@ -172,7 +273,16 @@ export const useOnAirStore = defineStore('onAir', {
       // Air is normally ahead of the last segment that finished writing, and setPlayhead clamps to
       // the timeline's duration — without this the playhead would peg to the end of the last clip
       // and stop following as soon as it caught up with the recorded material.
+      //
+      // Deliberately still done while frozen: the on-air band is drawn from `currentFrame`, so the
+      // timeline has to keep growing for air to visibly advance toward the held playhead. Freezing
+      // holds the *view* still, not the transmission.
       timeline.ensureDuration(frame + this.fps);
+
+      // Everything below moves the operator. While frozen it is exactly what must not happen — the
+      // playhead is theirs until they release it, and a viewport that scrolled itself back to air
+      // would make working ahead of air impossible.
+      if (this.frozen) return;
 
       // setPlayhead's emit is suppressed: this runs up to once a frame, and air is a fact each
       // client reads from Emerald for itself, not a scrub one client should be broadcasting to
@@ -185,6 +295,69 @@ export const useOnAirStore = defineStore('onAir', {
       if (fromPoll && drift > RESYNC_THRESHOLD_FRAMES) {
         timeline.pendingScrollFrame = frame;
       }
+    },
+
+    /**
+     * Converts a timeline frame to the wall-clock instant it represents.
+     *
+     * The timeline counts frames since local midnight — that is how captured segments are placed
+     * (timelineStore.placeLiveSegment) and how the on-air timecode is read back at the top of this
+     * file. Emerald counts the same midnight on the same site, which is what lets a frame here name
+     * a moment of recorded material there without either side sending a session offset.
+     */
+    frameToWallClockMs(frame: number): number {
+      const midnight = new Date();
+      midnight.setHours(0, 0, 0, 0);
+      return midnight.getTime() + (frame / this.fps) * 1000;
+    },
+
+    async refreshAirEdl(): Promise<void> {
+      this.airEdl = await fetchAirEdl();
+    },
+
+    /**
+     * Removes a range of the timeline from the transmission, and from the timeline, as one action.
+     *
+     * Deliberately one action rather than two. A local delete and an air cut issued separately can
+     * disagree — the air cut can be refused while the local delete succeeds — and an editor showing
+     * a sequence that is not what is going out is worse than one that cannot cut at all. Air is
+     * asked first and the timeline only follows once it has agreed.
+     *
+     * Returns false with `lastCutError` set on refusal; the caller shows it and changes nothing.
+     */
+    async cutRangeFromAir(startFrame: number, endFrame: number, clipIds: string[] = []): Promise<boolean> {
+      if (endFrame <= startFrame) return false;
+
+      this.cutting = true;
+      this.lastCutError = null;
+
+      try {
+        const result = await cutFromAir(this.frameToWallClockMs(startFrame), this.frameToWallClockMs(endFrame));
+        if (!result.ok) {
+          this.lastCutError = result.error;
+          return false;
+        }
+
+        const timeline = useTimelineStore();
+        for (const clipId of clipIds) timeline.removeClip(clipId);
+
+        await this.refreshAirEdl();
+        return true;
+      } finally {
+        this.cutting = false;
+      }
+    },
+
+    /** Puts a cut back on air, if the play point has not reached it yet. */
+    async restoreCut(id: string): Promise<boolean> {
+      this.lastCutError = null;
+      const result = await restoreAirCut(id);
+      if (!result.ok) {
+        this.lastCutError = result.error;
+        return false;
+      }
+      await this.refreshAirEdl();
+      return true;
     },
 
     startPolling(): void {

@@ -96,7 +96,7 @@ function onClick(event: MouseEvent): void {
       :style="{ left: `${tick.left}px` }"
     >
       <div class="h-2 w-px bg-white/20" />
-      <span class="ml-1 font-mono text-[10px] text-slate-500">{{ tick.label }}</span>
+      <span class="ml-1 font-mono text-[0.625rem] text-slate-500">{{ tick.label }}</span>
     </div>
   </div>
 </template>

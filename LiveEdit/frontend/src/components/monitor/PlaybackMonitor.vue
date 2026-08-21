@@ -54,8 +54,8 @@ function requestFullscreen(): void {
       <!-- Red timecode header over the embedded on-air monitor -->
       <div class="overflow-hidden rounded-lg border border-white/5 bg-black">
         <div class="flex items-center justify-between bg-gradient-to-r from-rose-600/80 to-rose-700/70 px-2 py-0.5">
-          <span class="font-mono text-[11px] font-semibold tracking-wider text-white/95">{{ timecode }}</span>
-          <span class="font-mono text-[9px] uppercase tracking-widest text-white/70">{{ info.resolution }}</span>
+          <span class="font-mono text-[0.6875rem] font-semibold tracking-wider text-white/95">{{ timecode }}</span>
+          <span class="font-mono text-[0.5625rem] uppercase tracking-widest text-white/70">{{ info.resolution }}</span>
         </div>
         <div class="relative aspect-video overflow-hidden bg-black">
           <iframe
@@ -85,7 +85,7 @@ function requestFullscreen(): void {
         <button class="rounded p-1 text-slate-400 transition hover:text-teal-300" title="Reload preview" @click="frameRef?.contentWindow?.location.reload()">
           <ArrowPathIcon class="h-4 w-4" />
         </button>
-        <span class="flex h-5 w-6 items-center justify-center rounded border border-emerald-400/40 bg-emerald-400/10 font-mono text-[9px] font-bold text-emerald-300">VU</span>
+        <span class="flex h-5 w-6 items-center justify-center rounded border border-emerald-400/40 bg-emerald-400/10 font-mono text-[0.5625rem] font-bold text-emerald-300">VU</span>
         <button class="rounded p-1 text-slate-400 transition hover:text-emerald-300" title="Fullscreen" @click="requestFullscreen">
           <ArrowsPointingOutIcon class="h-4 w-4" />
         </button>
@@ -100,11 +100,11 @@ function requestFullscreen(): void {
 
       <!-- Metadata -->
       <div class="flex-1 space-y-2 overflow-y-auto rounded-lg border border-white/5 bg-surface-850/60 p-3 text-xs">
-        <h3 class="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+        <h3 class="mb-1 flex items-center gap-1.5 text-[0.625rem] font-semibold uppercase tracking-widest text-slate-400">
           <GlobeAltIcon class="h-3.5 w-3.5 text-teal-400" />
           Live Playback
           <span
-            class="ml-auto rounded-full px-2 py-0.5 text-[9px] font-medium"
+            class="ml-auto rounded-full px-2 py-0.5 text-[0.5625rem] font-medium"
             :class="info.isPlaying ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/5 text-slate-500'"
           >
             {{ info.isPlaying ? 'PLAYING' : 'PAUSED' }}
@@ -142,13 +142,13 @@ function requestFullscreen(): void {
     <!-- Rotated edge tabs (right) -->
     <div class="flex w-8 shrink-0 flex-col items-stretch gap-2 pl-1">
       <div
-        class="flex flex-1 items-center justify-center rounded-r-md border-r-2 border-rose-400 bg-rose-400/10 text-[11px] font-semibold uppercase tracking-widest text-rose-300"
+        class="flex flex-1 items-center justify-center rounded-r-md border-r-2 border-rose-400 bg-rose-400/10 text-[0.6875rem] font-semibold uppercase tracking-widest text-rose-300"
         style="writing-mode: vertical-rl"
       >
         Live Playback
       </div>
       <button
-        class="flex flex-1 items-center justify-center rounded-r-md border-r-2 text-[11px] font-semibold uppercase tracking-widest transition"
+        class="flex flex-1 items-center justify-center rounded-r-md border-r-2 text-[0.6875rem] font-semibold uppercase tracking-widest transition"
         :class="inspectorOpen ? 'border-teal-400 bg-teal-400/10 text-teal-300' : 'border-white/10 bg-white/5 text-slate-500 hover:text-slate-300'"
         style="writing-mode: vertical-rl"
         title="Toggle Video / Audio FX inspector"

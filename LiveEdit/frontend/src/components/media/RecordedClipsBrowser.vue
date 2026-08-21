@@ -84,7 +84,7 @@ function formatCreated(iso: string): string {
         :class="programStore.clip?.url === clip.url ? 'border-teal-400 shadow-glow-teal' : 'border-white/5 bg-surface-850/70 hover:border-teal-500/40'"
         @click="programStore.loadClip(clip)"
       >
-        <div class="relative w-full shrink-0 overflow-hidden bg-black" style="height: 72px">
+        <div class="relative w-full shrink-0 overflow-hidden bg-black" style="height: 4.5rem">
           <img
             :src="clip.thumbnailUrl ?? ''"
             :alt="clip.fileName"
@@ -93,11 +93,11 @@ function formatCreated(iso: string): string {
             @error="($event.target as HTMLImageElement).style.visibility = 'hidden'"
           />
           <FilmIcon class="pointer-events-none absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 text-white/20" />
-          <span class="absolute right-1 top-1 rounded bg-black/60 px-1 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-white/80">MP4</span>
+          <span class="absolute right-1 top-1 rounded bg-black/60 px-1 py-0.5 text-[0.5rem] font-semibold uppercase tracking-wide text-white/80">MP4</span>
         </div>
         <div class="space-y-0.5 px-1.5 py-1.5">
-          <p class="truncate text-[11px] font-medium text-slate-200">{{ clip.fileName }}</p>
-          <p class="font-mono text-[10px] text-slate-500">{{ formatSize(clip.size) }} · {{ formatCreated(clip.createdAt) }}</p>
+          <p class="truncate text-[0.6875rem] font-medium text-slate-200">{{ clip.fileName }}</p>
+          <p class="font-mono text-[0.625rem] text-slate-500">{{ formatSize(clip.size) }} · {{ formatCreated(clip.createdAt) }}</p>
         </div>
       </button>
 

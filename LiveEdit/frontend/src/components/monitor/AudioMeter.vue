@@ -28,7 +28,7 @@ const activeSegments = computed(() => Math.round((props.level / 100) * segments)
 
 <template>
   <div class="flex h-full items-end gap-1">
-    <div v-for="ch in channels" :key="ch" class="flex h-full w-2 flex-col-reverse gap-[2px]">
+    <div v-for="ch in channels" :key="ch" class="flex h-full w-2 flex-col-reverse gap-[0.125rem]">
       <div
         v-for="i in segments"
         :key="i"

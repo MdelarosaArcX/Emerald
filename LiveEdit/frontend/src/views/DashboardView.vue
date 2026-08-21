@@ -41,7 +41,7 @@ const quickLinks = [
       <div class="rounded-xl border border-white/5 bg-surface-900/80 p-4 shadow-panel">
         <div class="mb-2 flex items-center gap-2 text-slate-500">
           <SignalIcon class="h-4 w-4 text-emerald-400" />
-          <span class="text-[11px] uppercase tracking-widest">Connection</span>
+          <span class="text-[0.6875rem] uppercase tracking-widest">Connection</span>
         </div>
         <p class="text-lg font-semibold" :class="projectStore.status.connected ? 'text-emerald-300' : 'text-rose-400'">
           {{ projectStore.status.connected ? 'Online' : 'Offline' }}
@@ -50,21 +50,21 @@ const quickLinks = [
       <div class="rounded-xl border border-white/5 bg-surface-900/80 p-4 shadow-panel">
         <div class="mb-2 flex items-center gap-2 text-slate-500">
           <CpuChipIcon class="h-4 w-4 text-teal-400" />
-          <span class="text-[11px] uppercase tracking-widest">CPU</span>
+          <span class="text-[0.6875rem] uppercase tracking-widest">CPU</span>
         </div>
         <p class="text-lg font-semibold text-slate-200">{{ Math.round(projectStore.status.cpuUsage) }}%</p>
       </div>
       <div class="rounded-xl border border-white/5 bg-surface-900/80 p-4 shadow-panel">
         <div class="mb-2 flex items-center gap-2 text-slate-500">
           <ChartBarIcon class="h-4 w-4 text-teal-400" />
-          <span class="text-[11px] uppercase tracking-widest">Memory</span>
+          <span class="text-[0.6875rem] uppercase tracking-widest">Memory</span>
         </div>
         <p class="text-lg font-semibold text-slate-200">{{ Math.round(projectStore.status.memoryUsage) }}%</p>
       </div>
       <div class="rounded-xl border border-white/5 bg-surface-900/80 p-4 shadow-panel">
         <div class="mb-2 flex items-center gap-2 text-slate-500">
           <FilmIcon class="h-4 w-4 text-emerald-400" />
-          <span class="text-[11px] uppercase tracking-widest">Media Assets</span>
+          <span class="text-[0.6875rem] uppercase tracking-widest">Media Assets</span>
         </div>
         <p class="text-lg font-semibold text-slate-200">{{ projectStore.mediaAssets.length }}</p>
       </div>
@@ -88,19 +88,19 @@ const quickLinks = [
       <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-400">Project Details</h2>
       <dl class="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
         <div>
-          <dt class="text-[11px] text-slate-500">Resolution</dt>
+          <dt class="text-[0.6875rem] text-slate-500">Resolution</dt>
           <dd class="font-mono text-slate-300">{{ projectStore.project?.resolution ?? '—' }}</dd>
         </div>
         <div>
-          <dt class="text-[11px] text-slate-500">Frame Rate</dt>
+          <dt class="text-[0.6875rem] text-slate-500">Frame Rate</dt>
           <dd class="font-mono text-slate-300">{{ projectStore.project?.fps ?? '—' }}</dd>
         </div>
         <div>
-          <dt class="text-[11px] text-slate-500">Timeline Duration</dt>
+          <dt class="text-[0.6875rem] text-slate-500">Timeline Duration</dt>
           <dd class="font-mono text-slate-300">{{ timelineStore.duration }} frames</dd>
         </div>
         <div>
-          <dt class="text-[11px] text-slate-500">Tracks</dt>
+          <dt class="text-[0.6875rem] text-slate-500">Tracks</dt>
           <dd class="font-mono text-slate-300">{{ timelineStore.tracks.length }}</dd>
         </div>
       </dl>

@@ -11,3 +11,4 @@ artifacts/
 backend/logs/
 
 backend/logs/logs.txt
+LiveEdit/backend/.media-cache/*

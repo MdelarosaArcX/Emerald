@@ -1,7 +1,9 @@
 import cors from 'cors';
 import express, { Application, NextFunction, Request, Response } from 'express';
 import { PROXY_DIR, RENDER_DIR } from './controllers/render.controller';
+import { IMPORT_DIR } from './utils/mediaPaths';
 import captureRoutes from './routes/capture.routes';
+import mediaRoutes from './routes/media.routes';
 import playbackRoutes from './routes/playback.routes';
 import projectRoutes from './routes/project.routes';
 import renderRoutes from './routes/render.routes';
@@ -33,6 +35,8 @@ export function createApp(corsOrigin: string): Application {
   // Generated media (browser-playable proxies and rendered sequence outputs).
   app.use('/proxies', express.static(PROXY_DIR));
   app.use('/renders', express.static(RENDER_DIR));
+  // Media imported into the project (see media.controller) — the timeline plays these by URL.
+  app.use('/media-imports', express.static(IMPORT_DIR));
 
   if (LOCAL_RECORDINGS_AVAILABLE) {
     app.use('/local-recordings', express.static(LOCAL_RECORDINGS_PATH!));
@@ -43,6 +47,7 @@ export function createApp(corsOrigin: string): Application {
 
   app.use('/api', projectRoutes);
   app.use('/api', timelineRoutes);
+  app.use('/api', mediaRoutes);
   app.use('/api', playbackRoutes);
   app.use('/api', captureRoutes);
   app.use('/api', renderRoutes);

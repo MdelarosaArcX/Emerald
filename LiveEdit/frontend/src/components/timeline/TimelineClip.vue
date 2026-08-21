@@ -80,7 +80,7 @@ const isFx = computed(() => props.clip.type === 'fx');
 
     <!-- Audio: green waveform -->
     <template v-if="isAudio">
-      <div class="flex items-center gap-1 px-1.5 pt-1 text-[10px] font-medium leading-none" :style="{ color: clip.color }">
+      <div class="flex items-center gap-1 px-1.5 pt-1 text-[0.625rem] font-medium leading-none" :style="{ color: clip.color }">
         <span class="truncate">{{ clip.name }}</span>
       </div>
       <div class="flex-1 overflow-hidden px-1 pb-1">
@@ -99,7 +99,7 @@ const isFx = computed(() => props.clip.type === 'fx');
     <template v-else-if="isFx">
       <div class="flex h-full items-center gap-1 px-1.5" :style="{ color: clip.color }">
         <SparklesIcon class="h-3 w-3 shrink-0" />
-        <span class="truncate text-[10px] font-semibold">{{ clip.name }}</span>
+        <span class="truncate text-[0.625rem] font-semibold">{{ clip.name }}</span>
       </div>
     </template>
 
@@ -114,18 +114,18 @@ const isFx = computed(() => props.clip.type === 'fx');
         class="pointer-events-none absolute inset-0 opacity-40"
         style="background-image: repeating-linear-gradient(90deg, rgba(255,255,255,0.10) 0 2px, transparent 2px 14px), repeating-linear-gradient(0deg, rgba(0,0,0,0.35) 0 3px, transparent 3px 10px)"
       />
-      <div class="relative flex items-center gap-1 px-1.5 pt-1 text-[10px] font-medium leading-none text-white/90">
+      <div class="relative flex items-center gap-1 px-1.5 pt-1 text-[0.625rem] font-medium leading-none text-white/90">
         <span class="truncate rounded bg-black/40 px-1">{{ clip.name }}</span>
       </div>
-      <span class="absolute bottom-1 left-1.5 text-[9px] uppercase tracking-wider text-white/50">{{ typeLabel }}</span>
+      <span class="absolute bottom-1 left-1.5 text-[0.5625rem] uppercase tracking-wider text-white/50">{{ typeLabel }}</span>
     </template>
 
     <!-- Title / image / other -->
     <template v-else>
-      <div class="flex items-center gap-1 px-1.5 pt-1 text-[10px] font-medium leading-none" :style="{ color: clip.color }">
+      <div class="flex items-center gap-1 px-1.5 pt-1 text-[0.625rem] font-medium leading-none" :style="{ color: clip.color }">
         <span class="truncate">{{ clip.name }}</span>
       </div>
-      <span class="absolute bottom-1 left-1.5 text-[9px] uppercase tracking-wider text-slate-500">{{ typeLabel }}</span>
+      <span class="absolute bottom-1 left-1.5 text-[0.5625rem] uppercase tracking-wider text-slate-500">{{ typeLabel }}</span>
     </template>
 
     <!-- Trim handles (always visible; brighter for the selected clip) -->

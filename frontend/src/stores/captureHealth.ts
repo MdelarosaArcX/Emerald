@@ -33,6 +33,9 @@ type CaptureTimecode = {
     lastFrameAt: string | null;
     delaySeconds: number | null;
     channelIndex: number | null;
+    // Set only when capture is not running — e.g. waiting for SDI signal lock on the configured
+    // RX channel. See DeltacastSdkService's CaptureStatus.LastMessage.
+    lastMessage: string | null;
     sdiInterface: string | null;
     videoStandard: string | null;
     videoWidth: number | null;

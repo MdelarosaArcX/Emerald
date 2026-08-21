@@ -41,7 +41,7 @@ const settingsStore = useSettingsStore();
           :class="settingsStore.snapToFrame ? 'bg-emerald-500' : 'bg-white/10'"
           @click="settingsStore.toggleSnapToFrame()"
         >
-          <span class="block h-5 w-5 translate-x-0.5 rounded-full bg-white transition" :class="settingsStore.snapToFrame ? 'translate-x-[22px]' : ''" />
+          <span class="block h-5 w-5 translate-x-0.5 rounded-full bg-white transition" :class="settingsStore.snapToFrame ? 'translate-x-[1.375rem]' : ''" />
         </button>
       </div>
 
@@ -52,7 +52,7 @@ const settingsStore = useSettingsStore();
           :class="settingsStore.autoSave ? 'bg-emerald-500' : 'bg-white/10'"
           @click="settingsStore.toggleAutoSave()"
         >
-          <span class="block h-5 w-5 translate-x-0.5 rounded-full bg-white transition" :class="settingsStore.autoSave ? 'translate-x-[22px]' : ''" />
+          <span class="block h-5 w-5 translate-x-0.5 rounded-full bg-white transition" :class="settingsStore.autoSave ? 'translate-x-[1.375rem]' : ''" />
         </button>
       </div>
 
@@ -63,7 +63,7 @@ const settingsStore = useSettingsStore();
           :class="settingsStore.showAudioMeters ? 'bg-emerald-500' : 'bg-white/10'"
           @click="settingsStore.toggleAudioMeters()"
         >
-          <span class="block h-5 w-5 translate-x-0.5 rounded-full bg-white transition" :class="settingsStore.showAudioMeters ? 'translate-x-[22px]' : ''" />
+          <span class="block h-5 w-5 translate-x-0.5 rounded-full bg-white transition" :class="settingsStore.showAudioMeters ? 'translate-x-[1.375rem]' : ''" />
         </button>
       </div>
 
@@ -87,7 +87,7 @@ const settingsStore = useSettingsStore();
           :class="settingsStore.proxyPlayback ? 'bg-emerald-500' : 'bg-white/10'"
           @click="settingsStore.toggleProxyPlayback()"
         >
-          <span class="block h-5 w-5 translate-x-0.5 rounded-full bg-white transition" :class="settingsStore.proxyPlayback ? 'translate-x-[22px]' : ''" />
+          <span class="block h-5 w-5 translate-x-0.5 rounded-full bg-white transition" :class="settingsStore.proxyPlayback ? 'translate-x-[1.375rem]' : ''" />
         </button>
       </div>
     </section>

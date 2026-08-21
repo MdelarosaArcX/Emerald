@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeFfmpegPath } = require("./obsRecordingService");
+const { applyEdlToSegments, loadEdl, pruneUnreferencedTrims } = require("./airEdlService");
 const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
 const { parseSizeLimit, getDirectorySize, enforceFolderQuota, trimActiveSessionSegments } = require("./storageQuotaService");
 const { logEvent } = require("./eventLogService");
@@ -329,6 +330,9 @@ class ObsIngestService {
     this.recordingSizeLimitBytes = recordingSizeLimitBytes;
     this.storageSizeLimitBytes = storageSizeLimitBytes;
     this.broadcastDelaySeconds = broadcastDelaySeconds;
+    // Kept so the playlist writer can build trimmed substitutes for air-EDL cuts with the same
+    // ffmpeg binary the recording itself was started with.
+    this.recordingFfmpegPath = ffmpegPath;
     this.copiedBackupSegments = new Set();
     this.dbSessionId = null;
     this.dbKnownSegments = new Set();
@@ -615,7 +619,16 @@ class ObsIngestService {
     const sessionDir = path.join(this.recordingsPath, this.sessionFolderName);
 
     try {
-      await writeTxPlaylist(sessionDir, TX_HLS_SEGMENT_SECONDS, this.ffmpegExited, this.broadcastDelaySeconds || 0);
+      await writeTxPlaylist(
+        sessionDir,
+        TX_HLS_SEGMENT_SECONDS,
+        this.ffmpegExited,
+        this.broadcastDelaySeconds || 0,
+        // The segment timebase the air EDL cuts against — see airEdlService.segmentSpan for why
+        // this is the recording's start instant rather than each file's mtime.
+        Date.parse(this.recordingStatus.startedAt),
+        this.recordingFfmpegPath || "ffmpeg",
+      );
     } catch (error) {
       this.recordingStatus = { ...this.recordingStatus, lastMessage: `Unable to update TX playlist: ${error.message}` };
     }
@@ -696,6 +709,9 @@ class ObsIngestService {
 module.exports = {
   ObsIngestService,
   TX_LIVE_PLAYLIST_NAME,
+  // Exported so the on-air position can be derived from a segment index — see server.js's
+  // onAirContentTime, which converts TX's frame count into the capture instant it is playing.
+  TX_HLS_SEGMENT_SECONDS,
   startOrphanTxPlaylistWatcher,
   // Exported so the storage quota watchdog can find the backup volume without a recording being
   // in progress — it needs to police that volume whether or not this service has a session open.
@@ -705,7 +721,7 @@ module.exports = {
 // Builds emerald-tx-live.m3u8's content from whatever emerald-tx-NNN.ts segments exist in
 // `sessionDir`, then writes it in place (no rename — see the comment on TX_LIVE_PLAYLIST_NAME).
 // Returns false if there are no eligible segments to write yet.
-async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited, delaySeconds = 0) {
+async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited, delaySeconds = 0, recordingStartedAtMs = NaN, ffmpegPath = "ffmpeg") {
   const files = await fs.promises.readdir(sessionDir);
 
   const pattern = /^emerald-tx-(\d+)\.ts$/;
@@ -745,9 +761,46 @@ async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited, delaySe
 
   if (eligibleSegments.length === 0) return false;
 
+  // Apply the operator's cuts. This is the step that makes an edit in LiveEdit's timeline an edit
+  // of the transmission: entries come back with segments dropped and boundary segments replaced by
+  // trimmed substitutes, and TX plays whatever this file says. See airEdlService.
+  //
+  // Falls back to the uncut segment list on any failure — an EDL problem must never be able to
+  // empty the playlist, because an empty playlist is dead air.
+  let entries = eligibleSegments.map((segment) => ({ fileName: segment.fileName, durationSeconds: targetDuration }));
+  const { cuts } = loadEdl(sessionDir);
+
+  if (cuts.length && Number.isFinite(recordingStartedAtMs)) {
+    try {
+      const edited = await applyEdlToSegments({
+        segments: eligibleSegments,
+        cuts,
+        sessionDir,
+        recordingStartedAtMs,
+        targetDurationSeconds: targetDuration,
+        ffmpegPath,
+        onTrimError: (fileName, error) => {
+          console.error(`Air EDL: could not trim '${fileName}', airing it whole:`, error.message);
+        },
+      });
+      if (edited.length) entries = edited;
+    } catch (error) {
+      console.error("Air EDL: falling back to the uncut playlist:", error.message);
+    }
+  }
+
+  if (entries.length === 0) return false;
+
+  // Trim substitutes are named so the recorder's own scans skip them, which also puts them outside
+  // the quota trimmer's reach — so they are cleaned up here, against the playlist that is the only
+  // thing that knows which of them still matter.
+  await pruneUnreferencedTrims(sessionDir, new Set(entries.map((entry) => entry.fileName)));
+
   const lines = [
     "#EXTM3U",
     "#EXT-X-VERSION:3",
+    // Trimmed substitutes are shorter than a whole segment, never longer, so the recorder's
+    // segment length remains the ceiling the spec requires this to be.
     `#EXT-X-TARGETDURATION:${targetDuration}`,
     // The storage quota's rolling-buffer trim (trimActiveSessionSegments) can delete the earliest
     // .ts segments out from under a still-recording session, so the first listed segment's index
@@ -755,7 +808,7 @@ async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited, delaySe
     // per the HLS spec, or players/ffmpeg's hls demuxer will mis-map segment numbering.
     `#EXT-X-MEDIA-SEQUENCE:${eligibleSegments[0].index}`,
     "#EXT-X-PLAYLIST-TYPE:EVENT",
-    ...eligibleSegments.flatMap((segment) => [`#EXTINF:${targetDuration.toFixed(6)},`, segment.fileName]),
+    ...entries.flatMap((entry) => [`#EXTINF:${entry.durationSeconds.toFixed(6)},`, entry.fileName]),
   ];
 
   if (ffmpegExited) {

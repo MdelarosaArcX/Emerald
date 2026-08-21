@@ -22,6 +22,8 @@ export interface MediaAsset {
   codec: string;
   bitrate: string;
   sizeBytes: number;
+  /** Whether the source carries an audio stream — decides whether a drop also fills an audio lane. */
+  hasAudio?: boolean;
   thumbnail?: string;
   createdAt: string;
 }

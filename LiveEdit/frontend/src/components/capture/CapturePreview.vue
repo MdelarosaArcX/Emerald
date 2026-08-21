@@ -56,12 +56,12 @@ function requestFullscreen(): void {
     <!-- Amber timecode header over the embedded capture monitor -->
     <div class="shrink-0 overflow-hidden rounded-lg border border-white/5 bg-black">
       <div class="flex items-center justify-between bg-gradient-to-r from-amber-500/80 to-amber-600/70 px-2 py-0.5">
-        <span class="font-mono text-[11px] font-semibold tracking-wider text-black/90">{{ timecode }}</span>
-        <span class="font-mono text-[9px] uppercase tracking-widest text-black/70">{{ info.resolution }}</span>
+        <span class="font-mono text-[0.6875rem] font-semibold tracking-wider text-black/90">{{ timecode }}</span>
+        <span class="font-mono text-[0.5625rem] uppercase tracking-widest text-black/70">{{ info.resolution }}</span>
       </div>
       <!-- Compact fixed height in Live Edit mode (stacked column) so the details below stay
            visible; full 16:9 in the tall tabbed panel. -->
-      <div class="relative overflow-hidden bg-black" :class="settingsStore.liveEditMode ? 'h-[92px]' : 'aspect-video'">
+      <div class="relative overflow-hidden bg-black" :class="settingsStore.liveEditMode ? 'h-[5.75rem]' : 'aspect-video'">
         <iframe
           ref="frameRef"
           :src="captureMonitorUrl"
@@ -95,7 +95,7 @@ function requestFullscreen(): void {
       <button class="rounded p-1 text-slate-400 transition hover:text-emerald-300" title="Snapshot">
         <CameraIcon class="h-4 w-4" />
       </button>
-      <span class="flex h-5 w-6 items-center justify-center rounded border border-emerald-400/40 bg-emerald-400/10 font-mono text-[9px] font-bold text-emerald-300">VU</span>
+      <span class="flex h-5 w-6 items-center justify-center rounded border border-emerald-400/40 bg-emerald-400/10 font-mono text-[0.5625rem] font-bold text-emerald-300">VU</span>
       <button class="rounded p-1 text-slate-400 transition hover:text-emerald-300" title="Fullscreen" @click="requestFullscreen">
         <ArrowsPointingOutIcon class="h-4 w-4" />
       </button>
@@ -110,11 +110,11 @@ function requestFullscreen(): void {
 
     <!-- Metadata -->
     <div class="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-white/5 bg-surface-850/60 p-3 text-xs">
-      <h3 class="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+      <h3 class="mb-1 flex items-center gap-1.5 text-[0.625rem] font-semibold uppercase tracking-widest text-slate-400">
         <GlobeAltIcon class="h-3.5 w-3.5 text-teal-400" />
         Capture Preview
         <span
-          class="ml-auto rounded-full px-2 py-0.5 text-[9px] font-medium"
+          class="ml-auto rounded-full px-2 py-0.5 text-[0.5625rem] font-medium"
           :class="info.isCapturing ? 'bg-rose-500/15 text-rose-400' : 'bg-white/5 text-slate-500'"
         >
           {{ info.isCapturing ? 'CAPTURING' : 'IDLE' }}

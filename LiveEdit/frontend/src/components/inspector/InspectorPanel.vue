@@ -60,7 +60,7 @@ function updatePosition(axis: 'x' | 'y', event: Event): void {
     <div v-else class="flex-1 space-y-4 overflow-y-auto pr-1 text-xs">
       <!-- Loaded program clip details -->
       <div v-if="program" class="rounded-lg border border-white/5 bg-surface-850/60 p-3">
-        <h3 class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+        <h3 class="mb-2 flex items-center gap-1.5 text-[0.625rem] font-semibold uppercase tracking-widest text-slate-500">
           <InformationCircleIcon class="h-3.5 w-3.5 text-teal-400" />
           Clip Information
         </h3>
@@ -102,7 +102,7 @@ function updatePosition(axis: 'x' | 'y', event: Event): void {
             <span class="h-2.5 w-2.5 rounded-full" :style="{ backgroundColor: clip.color }" />
             <span class="truncate text-sm font-semibold text-slate-100">{{ clip.name }}</span>
           </div>
-          <dl class="grid grid-cols-2 gap-y-1.5 font-mono text-[11px] text-slate-400">
+          <dl class="grid grid-cols-2 gap-y-1.5 font-mono text-[0.6875rem] text-slate-400">
             <dt>Start</dt>
             <dd class="text-right text-slate-300">{{ framesToTimecode(clip.start) }}</dd>
             <dt>End</dt>
@@ -113,7 +113,7 @@ function updatePosition(axis: 'x' | 'y', event: Event): void {
         </div>
 
         <div class="space-y-3 rounded-lg border border-white/5 bg-surface-850/60 p-3">
-          <h3 class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Transform</h3>
+          <h3 class="text-[0.625rem] font-semibold uppercase tracking-widest text-slate-500">Transform</h3>
 
           <label class="block space-y-1">
             <div class="flex justify-between"><span class="text-slate-500">Opacity</span><span class="text-slate-300">{{ clip.opacity }}%</span></div>
@@ -153,7 +153,7 @@ function updatePosition(axis: 'x' | 'y', event: Event): void {
         </div>
 
         <div class="space-y-3 rounded-lg border border-white/5 bg-surface-850/60 p-3">
-          <h3 class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Playback</h3>
+          <h3 class="text-[0.625rem] font-semibold uppercase tracking-widest text-slate-500">Playback</h3>
 
           <label class="block space-y-1">
             <div class="flex justify-between"><span class="text-slate-500">Speed</span><span class="text-slate-300">{{ clip.speed }}x</span></div>
@@ -167,7 +167,7 @@ function updatePosition(axis: 'x' | 'y', event: Event): void {
         </div>
 
         <div class="space-y-2 rounded-lg border border-white/5 bg-surface-850/60 p-3">
-          <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+          <h3 class="flex items-center gap-1.5 text-[0.625rem] font-semibold uppercase tracking-widest text-slate-500">
             <SparklesIcon class="h-3.5 w-3.5 text-emerald-400" />
             Effects
           </h3>
@@ -178,7 +178,7 @@ function updatePosition(axis: 'x' | 'y', event: Event): void {
               class="flex items-center justify-between rounded border border-white/5 bg-surface-800 px-2 py-1.5"
             >
               <span class="text-slate-300">{{ effect.name }}</span>
-              <span class="rounded-full px-1.5 py-0.5 text-[9px]" :class="effect.enabled ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/5 text-slate-500'">
+              <span class="rounded-full px-1.5 py-0.5 text-[0.5625rem]" :class="effect.enabled ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/5 text-slate-500'">
                 {{ effect.enabled ? 'ON' : 'OFF' }}
               </span>
             </li>

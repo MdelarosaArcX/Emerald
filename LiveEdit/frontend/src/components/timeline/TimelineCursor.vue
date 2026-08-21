@@ -25,7 +25,7 @@ const label = computed(() => framesToTimecode(timelineStore.mouseFrame ?? 0));
 <template>
   <div v-if="visible" class="pointer-events-none absolute inset-y-0 z-20 w-px bg-teal-400/50" :style="{ left: `${left}px` }">
     <span
-      class="absolute -top-5 left-0 -translate-x-1/2 whitespace-nowrap rounded bg-surface-800 px-1.5 py-0.5 font-mono text-[10px] text-teal-300 shadow-panel"
+      class="absolute -top-5 left-0 -translate-x-1/2 whitespace-nowrap rounded bg-surface-800 px-1.5 py-0.5 font-mono text-[0.625rem] text-teal-300 shadow-panel"
     >
       {{ label }}
     </span>

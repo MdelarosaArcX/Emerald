@@ -67,7 +67,7 @@ const onAir = computed(() => projectStore.status.recording || projectStore.statu
     <!-- Live clocks + status -->
     <div class="flex items-center gap-8">
       <div class="flex flex-col items-end leading-none">
-        <span class="mb-1.5 text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">
+        <span class="mb-1.5 text-[0.625rem] font-medium uppercase tracking-[0.18em] text-slate-500">
           Local Time HH:MM:SS:FPS
         </span>
         <span class="font-mono text-2xl font-semibold tracking-wide text-slate-100">
@@ -75,7 +75,7 @@ const onAir = computed(() => projectStore.status.recording || projectStore.statu
         </span>
       </div>
       <div class="flex flex-col items-end leading-none">
-        <span class="mb-1.5 text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">
+        <span class="mb-1.5 text-[0.625rem] font-medium uppercase tracking-[0.18em] text-slate-500">
           Delay SS:FPS
         </span>
         <span class="font-mono text-2xl font-semibold tracking-wide text-slate-100">

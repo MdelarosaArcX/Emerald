@@ -18,7 +18,7 @@ const mouseTimecode = computed(() =>
 </script>
 
 <template>
-  <footer class="flex h-7 shrink-0 items-center justify-between border-t border-white/5 bg-surface-900/90 px-4 font-mono text-[11px] text-slate-500">
+  <footer class="flex h-7 shrink-0 items-center justify-between border-t border-white/5 bg-surface-900/90 px-4 font-mono text-[0.6875rem] text-slate-500">
     <div class="flex items-center gap-4">
       <span>Zoom <span class="text-slate-300">{{ Math.round(timelineStore.zoom * 100) }}%</span></span>
       <span>Frame <span class="text-slate-300">{{ Math.round(timelineStore.playhead) }}</span></span>

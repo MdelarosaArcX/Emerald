@@ -39,7 +39,7 @@ function toggleEffect(name: string): void {
       <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Effects</h2>
     </header>
 
-    <p v-if="!clip" class="rounded-md border border-white/5 bg-surface-850/60 px-2.5 py-2 text-[11px] text-slate-500">
+    <p v-if="!clip" class="rounded-md border border-white/5 bg-surface-850/60 px-2.5 py-2 text-[0.6875rem] text-slate-500">
       Select a clip on the timeline to apply effects.
     </p>
 
@@ -47,7 +47,7 @@ function toggleEffect(name: string): void {
       <!-- Video effects -->
       <section class="rounded-lg border border-white/5 bg-surface-850/60">
         <button
-          class="flex w-full items-center gap-1.5 px-3 py-2 text-[11px] font-semibold uppercase tracking-widest text-slate-400 transition hover:text-slate-200"
+          class="flex w-full items-center gap-1.5 px-3 py-2 text-[0.6875rem] font-semibold uppercase tracking-widest text-slate-400 transition hover:text-slate-200"
           @click="videoOpen = !videoOpen"
         >
           <ChevronDownIcon class="h-3.5 w-3.5 transition" :class="{ '-rotate-90': !videoOpen }" />
@@ -57,7 +57,7 @@ function toggleEffect(name: string): void {
           <button
             v-for="fx in videoEffects"
             :key="fx"
-            class="rounded-md border px-2.5 py-1 text-[11px] font-medium transition"
+            class="rounded-md border px-2.5 py-1 text-[0.6875rem] font-medium transition"
             :class="isActive(fx)
               ? 'border-emerald-400/60 bg-emerald-400/15 text-emerald-200'
               : 'border-white/10 bg-surface-800 text-slate-300 hover:border-emerald-500/40 hover:text-emerald-200'"
@@ -72,7 +72,7 @@ function toggleEffect(name: string): void {
       <!-- Audio effects -->
       <section class="rounded-lg border border-white/5 bg-surface-850/60">
         <button
-          class="flex w-full items-center gap-1.5 px-3 py-2 text-[11px] font-semibold uppercase tracking-widest text-slate-400 transition hover:text-slate-200"
+          class="flex w-full items-center gap-1.5 px-3 py-2 text-[0.6875rem] font-semibold uppercase tracking-widest text-slate-400 transition hover:text-slate-200"
           @click="audioOpen = !audioOpen"
         >
           <ChevronDownIcon class="h-3.5 w-3.5 transition" :class="{ '-rotate-90': !audioOpen }" />
@@ -83,7 +83,7 @@ function toggleEffect(name: string): void {
           <button
             v-for="fx in audioEffects"
             :key="fx"
-            class="rounded-md border px-2.5 py-1 text-[11px] font-medium transition"
+            class="rounded-md border px-2.5 py-1 text-[0.6875rem] font-medium transition"
             :class="isActive(fx)
               ? 'border-teal-400/60 bg-teal-400/15 text-teal-200'
               : 'border-white/10 bg-surface-800 text-slate-300 hover:border-teal-500/40 hover:text-teal-200'"

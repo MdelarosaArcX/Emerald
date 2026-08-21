@@ -42,6 +42,10 @@ export default defineConfig(({ mode }) => {
         // Generated media (playable proxies + rendered outputs) served by the LiveEdit backend.
         '/proxies': { target: backendOrigin, changeOrigin: true },
         '/renders': { target: backendOrigin, changeOrigin: true },
+        // Media imported into the project — served from the backend's imports directory and played
+        // by URL from the timeline, so it has to be reachable through the dev server like the two
+        // generated-media mounts above.
+        '/media-imports': { target: backendOrigin, changeOrigin: true },
         '/socket.io': {
           target: backendOrigin,
           ws: true,

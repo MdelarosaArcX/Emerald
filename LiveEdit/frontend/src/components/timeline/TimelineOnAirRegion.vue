@@ -59,7 +59,7 @@ const airedWidth = computed(() => {
     <div class="absolute inset-y-0 w-0.5 bg-rose-500" :style="{ left: `${airedWidth}px` }" />
 
     <span
-      class="absolute left-1 top-1 flex items-center gap-1 rounded bg-rose-600/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-white shadow-glow-rose"
+      class="absolute left-1 top-1 flex items-center gap-1 rounded bg-rose-600/90 px-1.5 py-0.5 text-[0.5625rem] font-bold uppercase tracking-widest text-white shadow-glow-rose"
     >
       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
       On Air

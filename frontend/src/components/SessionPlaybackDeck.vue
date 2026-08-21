@@ -66,6 +66,13 @@ const showPreview = computed(() => tx.isTransmitting && Boolean(onAirWhepUrl.val
 // broadcast-delayed live feed (see /api/capture/timecode's onAir.broadcastDelaySeconds). Polled
 // alongside the other 5s status refreshes below and applied locally so the on-screen clock can
 // still tick smoothly every 40ms without a network round-trip per frame.
+//
+// That figure is now *measured* — the backend derives it from TX's frame counter against the
+// playlist rather than assuming the configured delay (see server.js's onAirContentTime). It
+// therefore stays correct when TX starts at the first segment rather than near the live edge, and
+// it is the same position LiveEdit's timeline draws its on-air marker at, so the two agree.
+// Subtracting it from `now` here is still right: air and the clock both advance at 1x, so a value
+// polled every few seconds stays accurate between polls.
 const onAirBroadcastDelaySeconds = ref(0);
 // Picked up from the same poll: how far this browser's clock sits from the backend's
 // generator-corrected one, and the frame rate the generator counts in. Same split as the Capture

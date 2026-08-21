@@ -217,7 +217,7 @@ defineExpose({ stop, playing });
 
     <span
       v-if="playable && source"
-      class="pointer-events-none absolute bottom-0 left-8 font-mono text-[9px] text-white/70 opacity-0 transition group-hover/wave:opacity-100"
+      class="pointer-events-none absolute bottom-0 left-8 font-mono text-[0.5625rem] text-white/70 opacity-0 transition group-hover/wave:opacity-100"
       :class="{ 'opacity-100': playing }"
     >
       {{ elapsedLabel }}

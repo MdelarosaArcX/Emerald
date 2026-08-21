@@ -72,7 +72,7 @@ function onSpeedChange(event: Event): void {
       <button class="text-slate-300 transition hover:text-emerald-300" title="Jump forward 10s" @click="emit('jumpForward')">
         <ForwardIcon class="h-6 w-6" />
       </button>
-      <span class="flex h-7 w-7 items-center justify-center rounded-full border border-emerald-400/50 bg-emerald-400/10 font-mono text-[10px] font-bold text-emerald-300" title="Audio levels">
+      <span class="flex h-7 w-7 items-center justify-center rounded-full border border-emerald-400/50 bg-emerald-400/10 font-mono text-[0.625rem] font-bold text-emerald-300" title="Audio levels">
         VU
       </span>
       <button class="text-slate-300 transition hover:text-emerald-300" title="Fullscreen" @click="emit('fullscreen')">

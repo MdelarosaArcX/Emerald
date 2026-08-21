@@ -148,12 +148,12 @@ onBeforeUnmount(() => videoRef.value?.pause());
     <!-- Preview -->
     <div class="shrink-0 overflow-hidden rounded-lg border border-white/5 bg-black">
       <div class="flex items-center justify-between bg-gradient-to-r from-teal-500/80 to-emerald-600/70 px-2 py-0.5">
-        <span class="truncate font-mono text-[11px] font-semibold tracking-wider text-black/90">
+        <span class="truncate font-mono text-[0.6875rem] font-semibold tracking-wider text-black/90">
           {{ clip?.fileName ?? 'Clip Preview' }}
         </span>
-        <span class="shrink-0 font-mono text-[10px] tracking-wider text-black/80">{{ positionTimecode }}</span>
+        <span class="shrink-0 font-mono text-[0.625rem] tracking-wider text-black/80">{{ positionTimecode }}</span>
       </div>
-      <div ref="frameRef" class="relative aspect-video max-h-[150px] overflow-hidden bg-black">
+      <div ref="frameRef" class="relative aspect-video max-h-[9.375rem] overflow-hidden bg-black">
         <video
           v-show="clip"
           ref="videoRef"
@@ -166,7 +166,7 @@ onBeforeUnmount(() => videoRef.value?.pause());
           @timeupdate="currentSeconds = videoRef?.currentTime ?? 0"
           @loadedmetadata="durationSeconds = Number.isFinite(videoRef?.duration) ? (videoRef?.duration ?? 0) : 0"
         />
-        <div v-if="!clip" class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-center text-[11px] text-slate-600">
+        <div v-if="!clip" class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-center text-[0.6875rem] text-slate-600">
           <FilmIcon class="h-6 w-6 text-white/15" />
           Select a clip below to preview it
         </div>
@@ -210,7 +210,7 @@ onBeforeUnmount(() => videoRef.value?.pause());
       <button class="rounded p-1 text-slate-400 transition hover:text-emerald-300 disabled:opacity-30" title="Forward 10s" :disabled="!clip" @click="skip(10)">
         <ForwardIcon class="h-4 w-4" />
       </button>
-      <span class="flex h-5 w-6 items-center justify-center rounded border border-emerald-400/40 bg-emerald-400/10 font-mono text-[9px] font-bold text-emerald-300">VU</span>
+      <span class="flex h-5 w-6 items-center justify-center rounded border border-emerald-400/40 bg-emerald-400/10 font-mono text-[0.5625rem] font-bold text-emerald-300">VU</span>
       <button class="rounded p-1 text-slate-400 transition hover:text-emerald-300" title="Fullscreen" @click="requestFullscreen">
         <ArrowsPointingOutIcon class="h-4 w-4" />
       </button>
@@ -218,7 +218,7 @@ onBeforeUnmount(() => videoRef.value?.pause());
 
     <!-- BROWSE MEDIA -->
     <div class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-white/5 bg-surface-850/60 p-3 text-xs">
-      <h3 class="mb-3 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-slate-300">
+      <h3 class="mb-3 flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-widest text-slate-300">
         <GlobeAltIcon class="h-4 w-4 text-teal-400" />
         Browse Media
       </h3>

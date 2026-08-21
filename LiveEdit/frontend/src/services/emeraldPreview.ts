@@ -161,3 +161,79 @@ export async function fetchEmeraldTimecode(): Promise<EmeraldTimecode | null> {
     return null;
   }
 }
+
+// --- Air EDL ---------------------------------------------------------------------------------
+// Cutting material out of the transmission before it goes out. The window this operates in is the
+// broadcast delay Emerald already holds segments back by; see the Emerald backend's
+// services/airEdlService.js for the ripple model and the safety rules it enforces.
+
+/** One committed cut — a wall-clock range that has been removed from the TX playlist. */
+export interface AirCut {
+  id: string;
+  startMs: number;
+  endMs: number;
+  createdAt: string;
+}
+
+export interface AirEdlState {
+  /** False when nothing is recording, i.e. there is no pre-air window to edit in at all. */
+  active: boolean;
+  cuts: AirCut[];
+  /** Seconds of delay already spent on cuts. */
+  spentSeconds: number;
+  /** Seconds of editing runway left. Every cut debits this — cutting spends delay. */
+  remainingDelaySeconds: number;
+  /** Floor below which a further cut is refused, to keep TX from running out of playlist. */
+  minRemainingDelaySeconds?: number;
+  /** How far ahead of the air point a cut must start. */
+  minLeadSeconds?: number;
+  broadcastDelaySeconds?: number;
+  recordingStartedAtMs?: number;
+  sessionFolder?: string;
+}
+
+const IDLE_AIR_EDL: AirEdlState = { active: false, cuts: [], spentSeconds: 0, remainingDelaySeconds: 0 };
+
+export async function fetchAirEdl(): Promise<AirEdlState> {
+  try {
+    const res = await fetch(`${EMERALD_API_BASE}/api/air-edl`);
+    if (!res.ok) return IDLE_AIR_EDL;
+    return (await res.json()) as AirEdlState;
+  } catch {
+    // Unreachable reads the same as "no editable window": the editor must not offer a cut it
+    // cannot deliver.
+    return IDLE_AIR_EDL;
+  }
+}
+
+/**
+ * Commits a cut. Resolves with the reason on refusal rather than throwing, because every refusal
+ * here is a broadcast state the operator needs to read (already on air, not enough delay left),
+ * not an exception.
+ */
+export async function cutFromAir(startMs: number, endMs: number): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`${EMERALD_API_BASE}/api/air-edl/cut`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startMs, endMs }),
+    });
+    if (res.ok) return { ok: true };
+    const body = (await res.json().catch(() => ({}))) as { message?: string };
+    return { ok: false, error: body.message ?? `Emerald refused the cut (${res.status}).` };
+  } catch {
+    return { ok: false, error: 'Could not reach Emerald to commit the cut.' };
+  }
+}
+
+/** Puts a cut back, if the play point has not reached it yet. */
+export async function restoreAirCut(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`${EMERALD_API_BASE}/api/air-edl/cut/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (res.ok) return { ok: true };
+    const body = (await res.json().catch(() => ({}))) as { message?: string };
+    return { ok: false, error: body.message ?? `Emerald refused to restore the cut (${res.status}).` };
+  } catch {
+    return { ok: false, error: 'Could not reach Emerald to restore the cut.' };
+  }
+}
