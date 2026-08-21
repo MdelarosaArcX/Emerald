@@ -1,0 +1,159 @@
+{
+  "//": "Emerald Deltacast Suite - service map read by EmeraldLauncher.exe at startup.",
+  "//paths": "{APP} is the install directory, {DATA} is the writable data directory below. %ENVVAR% also expands.",
+  "//editing": "Safe to edit by hand; restart the launcher to pick changes up. See docs/CONFIGURATION.md.",
+
+  "dataDirectory": "%PROGRAMDATA%\\EmeraldDeltacastSuite",
+
+  "//apps": "The suite's desktop applications. Each opens as a native window (EmeraldLauncher.exe --app <id>) hosting the locally served UI - no browser involved.",
+  "apps": [
+    {
+      "id": "emerald",
+      "title": "Emerald Capture",
+      "label": "Emerald Capture",
+      "url": "http://127.0.0.1:5173",
+      "icon": "emerald-capture.ico",
+      "width": 1600,
+      "height": 950,
+      "maximized": true,
+      "startupTimeoutSeconds": 150
+    },
+    {
+      "id": "liveedit",
+      "title": "LiveEdit",
+      "label": "LiveEdit",
+      "url": "http://127.0.0.1:5174",
+      "icon": "liveedit.ico",
+      "width": 1600,
+      "height": 950,
+      "maximized": true,
+      "startupTimeoutSeconds": 150
+    }
+  ],
+
+  "services": [
+    {
+      "id": "deltacast-capture",
+      "name": "Deltacast Capture Service",
+      "description": "SDI capture/transmit over the Deltacast board; HTTP control surface on 5055.",
+      "executable": "{APP}\\DeltacastCaptureService\\DeltacastCaptureService.exe",
+      "//arguments": "A .NET host reads appsettings.json from its content root, which defaults to the working directory. The working directory has to stay writable, so the content root is pointed at the install folder explicitly - without this the service silently ignores appsettings.json and runs on its built-in defaults (wrong channel, wrong frame rate).",
+      "arguments": "--contentRoot \"{APP}\\DeltacastCaptureService\"",
+      "workingDirectory": "{DATA}\\DeltacastCaptureService",
+      "healthUrl": "http://127.0.0.1:5055/capture/status",
+      "port": 5055,
+      "startupOrder": 10,
+      "healthTimeoutSeconds": 45,
+      "autoRestart": true,
+      "//required": "false so a workstation with no SDI board still gets a working Emerald + LiveEdit.",
+      "required": false,
+      "environment": {
+        "//ffmpeg": "Double underscore is .NET's separator for nested configuration keys; these override appsettings.json.",
+        "Streaming__FfmpegPath": "{APP}\\ffmpeg\\bin\\ffmpeg.exe",
+        "EditCapture__FfmpegPath": "{APP}\\ffmpeg\\bin\\ffmpeg.exe",
+        "Transmit__FfmpegPath": "{APP}\\ffmpeg\\bin\\ffmpeg.exe",
+        "OnAirPreview__FfmpegPath": "{APP}\\ffmpeg\\bin\\ffmpeg.exe",
+        "DOTNET_ENVIRONMENT": "Production"
+      }
+    },
+    {
+      "id": "emerald-backend",
+      "name": "Emerald Backend",
+      "description": "Fastify API, recording/export pipeline, RTMP ingest, and the MediaMTX WebRTC preview.",
+      "executable": "{APP}\\Node\\node.exe",
+      "arguments": "\"{APP}\\Emerald\\backend\\server.js\"",
+      "workingDirectory": "{DATA}\\Emerald",
+      "healthUrl": "http://127.0.0.1:5000/api/system/status",
+      "port": 5000,
+      "startupOrder": 20,
+      "healthTimeoutSeconds": 60,
+      "autoRestart": true,
+      "required": true,
+      "environment": {
+        "NODE_ENV": "production",
+        "EMERALD_URLS": "http://0.0.0.0:5000",
+        "EMERALD_RECORDINGS_PATH": "{DATA}\\Recordings",
+        "EMERALD_EXPORTS_PATH": "{DATA}\\Exports",
+        "EMERALD_EDIT_CAPTURE_PATH": "{DATA}\\EditCaptures",
+        "DATABASE_TYPE": "sqlite",
+        "DATABASE_PATH": "{DATA}\\db\\emerald.sqlite",
+        "FFMPEG_PATH": "{APP}\\ffmpeg\\bin\\ffmpeg.exe",
+        "FFPROBE_PATH": "{APP}\\ffmpeg\\bin\\ffprobe.exe",
+        "MEDIAMTX_PATH": "{APP}\\MediaMtx\\mediamtx.exe",
+        "MEDIAMTX_CONFIG_PATH": "{APP}\\MediaMtx\\mediamtx.yml",
+        "//MEDIAMTX_PUBLIC_HOST": "Change to this machine's LAN IP to let other machines watch the WebRTC preview.",
+        "MEDIAMTX_PUBLIC_HOST": "127.0.0.1",
+        "DELTACAST_TX_SERVICE_URL": "http://127.0.0.1:5055",
+        "STORAGE_QUOTA_ENFORCE": "true",
+        "RECORDING_SIZE_LIMIT": "200gb",
+        "STORAGE_SIZE_LIMIT": "200gb"
+      }
+    },
+    {
+      "id": "emerald-frontend",
+      "name": "Emerald Frontend",
+      "description": "Serves the built Emerald UI and proxies its API/media paths to the Emerald backend.",
+      "executable": "{APP}\\Node\\node.exe",
+      "arguments": "\"{APP}\\runtime\\static-server.js\"",
+      "workingDirectory": "{APP}\\runtime",
+      "healthUrl": "http://127.0.0.1:5173/",
+      "port": 5173,
+      "startupOrder": 30,
+      "healthTimeoutSeconds": 30,
+      "autoRestart": true,
+      "required": true,
+      "environment": {
+        "SERVE_PORT": "5173",
+        "SERVE_ROOT": "{APP}\\Emerald\\frontend",
+        "SERVE_HOST": "0.0.0.0",
+        "PROXY_TARGET": "http://127.0.0.1:5000",
+        "PROXY_PREFIXES": "/api,/hls,/recordings,/exports,/edit-captures"
+      }
+    },
+    {
+      "id": "liveedit-backend",
+      "name": "LiveEdit Backend",
+      "description": "Express + socket.io editing backend; builds proxies and renders timelines.",
+      "executable": "{APP}\\Node\\node.exe",
+      "arguments": "\"{APP}\\LiveEdit\\backend\\dist\\server.js\"",
+      "//workingDirectory": "LiveEdit writes its .media-cache relative to the working directory, so it must be writable.",
+      "workingDirectory": "{DATA}\\LiveEdit",
+      "healthUrl": "http://127.0.0.1:4123/api/status",
+      "port": 4123,
+      "startupOrder": 40,
+      "healthTimeoutSeconds": 45,
+      "autoRestart": true,
+      "required": true,
+      "environment": {
+        "NODE_ENV": "production",
+        "PORT": "4123",
+        "CORS_ORIGIN": "http://127.0.0.1:5174",
+        "EMERALD_BACKEND_URL": "http://127.0.0.1:5000",
+        "EMERALD_RECORDINGS_PATH": "{DATA}\\Recordings",
+        "EMERALD_EXPORTS_PATH": "{DATA}\\Exports",
+        "MEDIA_ASSET_SYNC_INTERVAL_MS": "10000"
+      }
+    },
+    {
+      "id": "liveedit-frontend",
+      "name": "LiveEdit Frontend",
+      "description": "Serves the built LiveEdit UI and proxies its API/socket.io paths to the LiveEdit backend.",
+      "executable": "{APP}\\Node\\node.exe",
+      "arguments": "\"{APP}\\runtime\\static-server.js\"",
+      "workingDirectory": "{APP}\\runtime",
+      "healthUrl": "http://127.0.0.1:5174/",
+      "port": 5174,
+      "startupOrder": 50,
+      "healthTimeoutSeconds": 30,
+      "autoRestart": true,
+      "required": true,
+      "environment": {
+        "SERVE_PORT": "5174",
+        "SERVE_ROOT": "{APP}\\LiveEdit\\frontend",
+        "SERVE_HOST": "0.0.0.0",
+        "PROXY_TARGET": "http://127.0.0.1:4123",
+        "PROXY_PREFIXES": "/api,/socket.io,/proxies,/renders,/local-recordings,/local-exports"
+      }
+    }
+  ]
+}

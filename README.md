@@ -2,6 +2,34 @@
 
 Emerald Streaming is a Node.js/Express OBS recorder with the same browser UI and FFmpeg-backed recording workflow as the original app.
 
+## Desktop Installer
+
+Emerald and LiveEdit also ship as two Windows desktop applications with a single installer that
+carries every runtime they need (Node, .NET, FFmpeg, MediaMTX) and supervises all five services.
+
+Everything for it lives in [`Installer/`](Installer/):
+
+```powershell
+# build          -> Installer\EmeraldDeltacastSuite-Setup-<version>.exe
+powershell -ExecutionPolicy Bypass -File Installer\build\build-installer.ps1 -Version 1.1.0
+
+# verify the built payload end to end
+powershell -ExecutionPolicy Bypass -File Installer\build\test-suite.ps1
+```
+
+| Document | For |
+| --- | --- |
+| [Installer/docs/BUILDING.md](Installer/docs/BUILDING.md) | **The build process** — prerequisites, every step, options, release checklist, failure modes |
+| [Installer/docs/GETTING-STARTED.md](Installer/docs/GETTING-STARTED.md) | Operators — install, run, where files live |
+| [Installer/docs/CONFIGURATION.md](Installer/docs/CONFIGURATION.md) | Every setting in `launcher.config.json` |
+| [Installer/docs/ARCHITECTURE.md](Installer/docs/ARCHITECTURE.md) | How the packaged suite fits together and why |
+| [Installer/docs/TROUBLESHOOTING.md](Installer/docs/TROUBLESHOOTING.md) | When a service or a window will not start |
+| [Installer/docs/TEST-REPORT.md](Installer/docs/TEST-REPORT.md) | Results of the last verification run |
+
+Note that the installer packages two components from **outside this repository** —
+`../DeltacastCaptureService` and `../MediaMtx` — so a checkout of Emerald on its own is not enough
+to build it.
+
 ## Run Locally
 
 ```powershell

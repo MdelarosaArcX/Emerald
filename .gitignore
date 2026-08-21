@@ -11,3 +11,13 @@ artifacts/
 backend/logs/
 
 backend/logs/logs.txt
+
+# --- Installer build output -------------------------------------------------
+# The staged payload is ~1.7 GB and the compiled setup ~470 MB, both regenerable
+# from `Installer\build\build-installer.ps1`. Neither belongs in git (GitHub
+# rejects any single file over 100 MB outright); ship the setup executable as a
+# release asset instead.
+Installer/stage/
+Installer/*.exe
+# Cached download of the WebView2 evergreen bootstrapper.
+Installer/build/redist/

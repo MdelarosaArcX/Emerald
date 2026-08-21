@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>EmeraldLauncher</AssemblyName>
+    <RootNamespace>EmeraldLauncher</RootNamespace>
+    <ApplicationIcon>emerald.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>Emerald Deltacast Suite</Product>
+    <Company>Emerald Deltacast</Company>
+    <AssemblyTitle>Emerald Deltacast Suite Launcher</AssemblyTitle>
+    <!-- Self-contained: the installed machine is a broadcast workstation that must not depend on a
+         separately-installed .NET runtime staying at the right version. -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>false</PublishSingleFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- The WebView2 package ships WinForms and WPF wrappers in one assembly set; only the WinForms
+         one is used here, but the unused WPF reference still triggers a WindowsBase version-conflict
+         warning on every build. Demoted to a message so a real warning stays visible. -->
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Hosts the Emerald and LiveEdit UIs in native desktop windows instead of a browser tab.
+         Adds a couple of megabytes; the Edge WebView2 runtime itself is a Windows component and is
+         not bundled - see the runtime check in setup.iss. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3485.44" />
+  </ItemGroup>
+
+</Project>

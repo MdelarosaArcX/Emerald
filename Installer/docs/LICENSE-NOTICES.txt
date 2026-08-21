@@ -1,0 +1,90 @@
+EMERALD DELTACAST SUITE
+Third-party components and licence notices
+===============================================================================
+
+Emerald Deltacast Suite bundles the runtimes and media tools it needs so that a
+broadcast workstation does not have to have them installed and version-matched
+separately. Those components remain under their own licences, reproduced or
+referenced below. Installing this suite does not change your obligations under
+any of them.
+
+-------------------------------------------------------------------------------
+1. FFmpeg
+-------------------------------------------------------------------------------
+Location after install:  <install folder>\ffmpeg\bin
+Upstream:                https://ffmpeg.org
+
+FFmpeg is free software licensed under the GNU Lesser General Public License
+(LGPL) version 2.1 or later. Depending on how the bundled build was configured,
+it may instead be covered by the GNU General Public License (GPL) version 2 or
+later -- a build that enables GPL-only components (such as x264 or x265) is a
+GPL build as a whole.
+
+The exact configuration of the bundled binary is printed by running:
+
+    <install folder>\ffmpeg\bin\ffmpeg.exe -version
+
+The licence text distributed with the FFmpeg build is kept alongside the
+binaries as ffmpeg\bin\LICENSE. If you redistribute this suite, you are
+responsible for satisfying the corresponding source-code offer that FFmpeg's
+licence requires for the build you ship.
+
+-------------------------------------------------------------------------------
+2. Node.js
+-------------------------------------------------------------------------------
+Location after install:  <install folder>\Node\node.exe
+Upstream:                https://nodejs.org
+
+Node.js is distributed under the MIT licence, with additional notices for its
+bundled dependencies (V8, libuv, OpenSSL and others). The licence file shipped
+with the runtime is kept as Node\LICENSE.
+
+-------------------------------------------------------------------------------
+3. MediaMTX
+-------------------------------------------------------------------------------
+Location after install:  <install folder>\MediaMtx
+Upstream:                https://github.com/bluenviron/mediamtx
+
+MediaMTX is distributed under the MIT licence; the licence file is kept
+alongside the binary as MediaMtx\LICENSE.
+
+-------------------------------------------------------------------------------
+4. .NET 8 runtime
+-------------------------------------------------------------------------------
+Location after install:  <install folder>\Launcher and
+                         <install folder>\DeltacastCaptureService
+
+The launcher and the Deltacast capture service are published self-contained, so
+each carries a private copy of the .NET 8 runtime. .NET is distributed by
+Microsoft under the MIT licence.
+
+-------------------------------------------------------------------------------
+5. npm dependencies
+-------------------------------------------------------------------------------
+Location after install:  <install folder>\Emerald\backend\node_modules
+                         <install folder>\LiveEdit\backend\node_modules
+
+The two Node backends ship their production dependency trees. Each package
+keeps its own licence file inside its folder in node_modules; the great
+majority are MIT, ISC or BSD licensed. A machine-readable inventory can be
+produced from a build machine with:
+
+    npm ls --omit=dev --all --json
+
+-------------------------------------------------------------------------------
+6. Deltacast / VideoMaster SDK
+-------------------------------------------------------------------------------
+NOT BUNDLED.
+
+The Deltacast capture service calls the VideoMaster runtime that ships with the
+Deltacast SDI board's own driver package. That software is licensed by Deltacast
+to the board's owner and is not redistributed here. Install the board driver
+from Deltacast before expecting the capture service to open an SDI channel.
+
+-------------------------------------------------------------------------------
+7. Emerald, LiveEdit and the Deltacast capture service
+-------------------------------------------------------------------------------
+The application code in this suite is the property of its owner and is not
+covered by any of the licences above.
+
+===============================================================================
