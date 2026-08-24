@@ -67,6 +67,25 @@ export interface EditCaptureSegmentAddedPayload {
   // subtraction, specifically because -use_wallclock_as_timestamps keeps this tracking true
   // elapsed time even under upstream frame drops).
   createdAt: string;
+  /**
+   * The segment's real recorded timecode on the generator's clock, when Emerald knows it.
+   * Preferred over createdAt for placement — see placeLiveSegment.
+   */
+  startTimecode?: string | null;
+}
+
+/**
+ * Frames since midnight for an "HH:MM:SS:FF" time-of-day timecode, or null if it isn't one.
+ *
+ * The same conversion onAirStore does for the on-air timecode, and deliberately identical: a
+ * segment placed by this and an air position derived by that have to land on the same scale or the
+ * on-air marker will not sit over the material actually going out.
+ */
+function timecodeToFrames(timecode: string, fps: number): number | null {
+  const match = /^(\d{1,2}):(\d{2}):(\d{2})[:;](\d{2})$/.exec(timecode.trim());
+  if (!match) return null;
+  const [, hh, mm, ss, ff] = match.map(Number);
+  return ((hh * 60 + mm) * 60 + ss) * fps + ff;
 }
 
 /** Frame 0 on V4 is midnight (local time) of the given moment's calendar day — see appendCaptureSegment(). */
@@ -238,6 +257,7 @@ export const useTimelineStore = defineStore('timeline', {
         // proxy it generated, the poll names it by Emerald's own URL, and folder/fileName is the
         // only thing the two have in common.
         sourceKey: `${payload.folder}/${payload.fileName}`,
+        startTimecode: payload.startTimecode,
       });
 
       // Bring the newly-landed segment into view — see pendingScrollFrame's doc comment. Only for
@@ -267,6 +287,8 @@ export const useTimelineStore = defineStore('timeline', {
       thumbnail?: string;
       /** `folder/fileName` — see Clip.sourceKey. Both arrival routes must derive this the same way. */
       sourceKey?: string;
+      /** The segment's recorded timecode on the generator's clock, when Emerald knows it. */
+      startTimecode?: string | null;
     }): number | null {
       if (!this.timeline) {
         console.warn('Ignoring capture segment: timeline has not loaded yet.', payload);
@@ -313,11 +335,25 @@ export const useTimelineStore = defineStore('timeline', {
         return null;
       }
 
-      const segmentStartedAtMs = new Date(payload.createdAt).getTime();
-      if (!Number.isFinite(segmentStartedAtMs)) return null;
+      // Position by the segment's real recorded timecode when Emerald knows it.
+      //
+      // The fallback below derives a position from the file's birthtime as read on *this* machine's
+      // clock, which is what the timeline used to do exclusively — and it is why the timeline, the
+      // playback preview and the on-air marker never quite agreed: the other two are expressed on
+      // the Timecode System generator's clock, and this one was not. startTimecode is that same
+      // generator clock (Emerald puts birthtime through timecodeAtLocalInstant before storing it),
+      // so positioning by it puts all three on one reference.
+      let timecodeFrame = payload.startTimecode
+        ? timecodeToFrames(payload.startTimecode, this.fps)
+        : null;
 
-      const dayStartMs = startOfDayMs(segmentStartedAtMs);
-      const timecodeFrame = Math.round(((segmentStartedAtMs - dayStartMs) / 1000) * this.fps);
+      if (timecodeFrame === null) {
+        const segmentStartedAtMs = new Date(payload.createdAt).getTime();
+        if (!Number.isFinite(segmentStartedAtMs)) return null;
+
+        const dayStartMs = startOfDayMs(segmentStartedAtMs);
+        timecodeFrame = Math.round(((segmentStartedAtMs - dayStartMs) / 1000) * this.fps);
+      }
       // Clamp forward only — a genuine gap (dropped/delayed segment) still shows up as a gap, but
       // clock imprecision can't land this a frame or two *before* the previous clip's end and
       // overlap it. Real material does need this: consecutive segments routinely overlap by a
@@ -391,6 +427,7 @@ export const useTimelineStore = defineStore('timeline', {
           createdAt: clip.createdAt,
           hasAudio: clip.hasAudio !== false,
           thumbnail: clip.thumbnailUrl ?? undefined,
+          startTimecode: clip.startTimecode,
           // Same key the socket route derives — see appendCaptureSegment.
           sourceKey: `${clip.sessionFolder}/${clip.fileName}`,
         });

@@ -34,6 +34,15 @@ export interface EditCaptureSegmentAddedPayload {
   durationSeconds: number;
   hasAudio: boolean;
   createdAt: string;
+  /**
+   * The segment's real recorded timecode on the Timecode System generator's clock, when the
+   * pipeline knows it. The timeline positions clips by this in preference to createdAt, so that a
+   * clip sits at the timecode it was captured at rather than at whatever the receiving machine's
+   * clock made of the file's birthtime — see the frontend's placeLiveSegment.
+   *
+   * Optional because not every pipeline supplies it, and older sessions have none stored.
+   */
+  startTimecode?: string | null;
 }
 
 let currentFolder: string | null = null;

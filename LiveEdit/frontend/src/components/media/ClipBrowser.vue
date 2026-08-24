@@ -300,6 +300,10 @@ function asRecordedClip(asset: MediaAsset): RecordedClip {
     createdAt: asset.createdAt,
     durationSeconds: asset.duration || null,
     hasAudio: asset.hasAudio ?? null,
+    // Imported media has no place in the recording's timebase — it was never captured by this
+    // system, so there is no recorded timecode to position it at. It lands where it is dropped.
+    startTimecode: null,
+    frameRate: null,
   };
 }
 

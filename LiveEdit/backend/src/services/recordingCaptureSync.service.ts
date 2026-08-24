@@ -31,6 +31,8 @@ interface RecordingSegment {
   createdAt: string;
   durationSeconds: number | null;
   hasAudio: boolean | null;
+  /** The segment's real recorded timecode, on the generator's clock — see server.js's listing. */
+  startTimecode: string | null;
 }
 
 // Only ever the folder we've actually observed with isRecording === true — never adopted just
@@ -141,6 +143,11 @@ async function poll(): Promise<void> {
       durationSeconds: segment.durationSeconds,
       hasAudio: segment.hasAudio ?? true,
       createdAt: segment.createdAt,
+      // Forwarded so a segment announced live lands at the same timeline position the backfill
+      // poll would give it. Without it the two routes place the same file differently — the socket
+      // copy by birthtime on the browser's clock, the poll by recorded timecode on the generator's
+      // — and they disagree by however far those clocks differ.
+      startTimecode: segment.startTimecode ?? null,
     } satisfies EditCaptureSegmentAddedPayload);
 
     knownIndices.add(segment.index);

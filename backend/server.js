@@ -481,6 +481,19 @@ function registerRoutes(server) {
       })
       .filter(Boolean);
 
+    // Read once for the whole listing, not per segment: this is what carries each segment's real
+    // recorded timecode. Everything downstream that has to line material up — LiveEdit's timeline
+    // placement, the on-air marker, the playback clock — has to agree on one reference, and the
+    // only value expressed on the *generator's* clock rather than on whichever machine happens to
+    // be asking is the one reconcileSegments stored here (see its timecodeAtLocalInstant call).
+    // birthtime, which this endpoint also returns, is this machine's raw clock and drifts from it.
+    const sessionRecord = await db.getSessionWithSegments(folder).catch(() => null);
+    const startTimecodeFor = (fileName) => {
+      const movName = fileName.replace(/\.(mp4|ts)$/i, ".mov");
+      const row = sessionRecord?.segments?.find((segment) => segment.movFileName === movName);
+      return row?.startTimecode ?? null;
+    };
+
     const segments = await mapWithConcurrency(matches, SEGMENT_PROBE_CONCURRENCY, async ({ fileName, kind }) => {
       const filePath = path.join(sessionDir, fileName);
       const stat = await fs.promises.stat(filePath);
@@ -503,6 +516,12 @@ function registerRoutes(server) {
           : null,
         size: stat.size,
         createdAt: stat.birthtime.toISOString(),
+        // The segment's real recorded timecode on the generator's clock — what a consumer should
+        // position it by. Null for segments recorded before per-segment timecodes were stored, and
+        // for .ts (the TX legs are never reconciled into the segment table); callers fall back to
+        // createdAt for those.
+        startTimecode: startTimecodeFor(fileName),
+        frameRate: sessionRecord?.frameRate ?? null,
         durationSeconds: probed?.durationSeconds ?? null,
         hasAudio: kind === "mp4" ? Boolean(probed?.audioCodec) : null,
       };

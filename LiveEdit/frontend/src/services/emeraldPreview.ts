@@ -58,6 +58,20 @@ export interface RecordedClip {
   // null for ts (not probed); for mp4, whether the source actually had an embedded audio track
   // (Emerald's audio map is optional, so a video-only source is a real, if uncommon, case).
   hasAudio: boolean | null;
+  /**
+   * The segment's real recorded timecode ("HH:MM:SS:FF"), on the Timecode System generator's
+   * clock — null for segments predating per-segment timecodes, and for .ts.
+   *
+   * This, not `createdAt`, is what a segment should be positioned by. `createdAt` is the file's
+   * birthtime as reported by whichever machine is asking, so placing clips with it drifts from the
+   * generator by however far these machines' clocks differ — which is exactly why the timeline and
+   * the playback/on-air clocks disagreed. Emerald derives this one by putting birthtime through
+   * timecodeAtLocalInstant, so it is expressed on the same clock the on-air position and the
+   * playback deck's readout already use.
+   */
+  startTimecode: string | null;
+  /** Frame rate the session was recorded at, for converting startTimecode to frames. */
+  frameRate: number | null;
 }
 
 /** One recording session — a folder of segments written by the Emerald recorder. */
