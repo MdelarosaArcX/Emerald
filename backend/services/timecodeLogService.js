@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { logEvent } = require("./eventLogService");
+const { logEvent, LOG_DIR } = require("./eventLogService");
 
 const DEFAULT_INTERVAL_MS = 1000;
 // Rising/falling thresholds (not one shared cutoff) so a buffer sitting right at ~80% can't spam
@@ -19,7 +19,7 @@ class TimecodeLogService {
     this.deltacastTx = deltacastTx;
     this.timecodeMaster = timecodeMaster;
     this.intervalMs = options.intervalMs || Number(process.env.TIMECODE_LOG_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
-    this.logPath = options.logPath || path.join(__dirname, "..", "logs", "timecode.log");
+    this.logPath = options.logPath || path.join(LOG_DIR, "timecode.log");
     this.handle = null;
     // Tracks the generator lock so losing (or regaining) it lands in the Capture Logs event log
     // as a discrete event, not just as a changed field on every one of these 1 Hz entries. A
@@ -36,7 +36,20 @@ class TimecodeLogService {
   start() {
     if (this.handle) return;
 
-    fs.mkdirSync(path.dirname(this.logPath), { recursive: true });
+    // A log destination that cannot be created is worth reporting, but it is not worth refusing to
+    // run over: this used to throw straight out of server.js's module body and take the whole
+    // backend down at startup — no capture, no playback, no API — because one log directory was
+    // not writable. Sampling continues either way; only the on-disk record is lost.
+    try {
+      fs.mkdirSync(path.dirname(this.logPath), { recursive: true });
+    } catch (error) {
+      console.error(
+        `Unable to create the timecode log directory '${path.dirname(this.logPath)}': ${error.message}. ` +
+          "Continuing without an on-disk timecode log; set EMERALD_LOG_PATH to a writable folder to restore it."
+      );
+      logEvent(`Timecode log disabled: ${error.message}`, "warn", "System");
+    }
+
     this.handle = setInterval(() => this.tick().catch(() => {}), this.intervalMs);
     this.handle.unref?.();
   }
