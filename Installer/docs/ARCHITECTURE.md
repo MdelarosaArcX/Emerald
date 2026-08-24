@@ -114,10 +114,23 @@ but with its own taskbar entry, its own icon, remembered window geometry, and no
 Default context menus and browser accelerator keys are switched off; `F5`, `F11`, `F12` and zoom
 are wired up explicitly because there is no browser menu to fall back on.
 
-Both windows and the control panel are **the same executable**. `EmeraldLauncher.exe --app emerald`
-and `--app liveedit` open windows; with no arguments it is the supervisor. Shipping a separate app
-shell would have meant a second copy of the self-contained .NET runtime — around 140 MB — for a few
-hundred lines of window code.
+Both windows, the control panel and the settings editor are **the same executable**.
+`EmeraldLauncher.exe --app emerald` and `--app liveedit` open windows, `--settings` opens the
+settings editor alone, `--apply-settings <source> <target>` is the elevated write helper it calls,
+and with no arguments it is the supervisor. Shipping a separate app shell would have meant a second
+copy of the self-contained .NET runtime — around 140 MB — for a few hundred lines of window code.
+
+### Why the settings editor writes to launcher.config.json, not a .env
+
+A development checkout configures each backend through a `.env` beside its code. The installed suite
+cannot: those backends run from a read-only Program Files with their working directory elsewhere, so
+dotenv finds nothing — and even if a `.env` were placed where they look, dotenv never overwrites a
+variable that is already set, so every key the launcher passes would silently win over it. Rather
+than ship a file that half-works, the environment blocks in `launcher.config.json` are the single
+source of truth, and the editor renders them in `.env` syntax because that is the shape people
+expect to read. The frontends have no runtime configuration at all beyond their host's port and
+proxy target; their `VITE_*` values are compiled into the bundle, so the editor shows them read-only
+rather than pretending otherwise.
 
 WebView2 is the one runtime not bundled. It is a Windows component present on any current
 Windows 10/11 machine, and the fixed-version alternative would add roughly 180 MB to the package to

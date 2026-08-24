@@ -244,6 +244,19 @@ try {
     $sqlite = Join-Path $DataDirectory "db\emerald.sqlite"
     Add-Result "Data" "SQLite database created outside Program Files" (Test-Path $sqlite) $sqlite
 
+    # The backend's own event log and timecode log. These used to default to backend\logs beside the
+    # code, which under Program Files is read-only for a standard user - the mkdir failed with EPERM
+    # and took the whole backend down at startup. They must land in the data directory instead.
+    $timecodeLog = Join-Path $DataDirectory "logs\timecode.log"
+    Add-Result "Data" "Backend timecode log written to the data directory" (Test-Path $timecodeLog) $timecodeLog
+
+    # The inverse of the check above, and the one that would actually have caught the original bug:
+    # nothing may be written inside the install tree, because on a real install that tree is under
+    # Program Files and read-only.
+    $inTreeLogs = Join-Path $AppRoot "Emerald\backend\logs"
+    Add-Result "Data" "Nothing written inside the install tree" (-not (Test-Path $inTreeLogs)) `
+        $(if (Test-Path $inTreeLogs) { "unexpected: $inTreeLogs" } else { "no logs folder beside the backend code" })
+
     # -----------------------------------------------------------------------------------------
     Write-Step "Service logs"
     # -----------------------------------------------------------------------------------------
@@ -260,7 +273,7 @@ try {
         # Only the required services are asserted clean: the capture service legitimately logs a
         # driver error on a machine with no Deltacast board.
         if ($service.Required) {
-            $noisy = Select-String -LiteralPath $logFile -Pattern "Error:|Unhandled|EADDRINUSE|Cannot find module|ENOENT|SQLITE_CANTOPEN" -ErrorAction SilentlyContinue
+            $noisy = Select-String -LiteralPath $logFile -Pattern "Error:|Unhandled|EADDRINUSE|EPERM|EACCES|Cannot find module|ENOENT|SQLITE_CANTOPEN" -ErrorAction SilentlyContinue
             $detail = if ($noisy) { ($noisy | Select-Object -First 3 | ForEach-Object { $_.Line.Trim() }) -join " | " } else { "no errors logged" }
             Add-Result "Logs" "$($service.Name) log is free of errors" (-not $noisy) $detail
         }
@@ -347,6 +360,53 @@ try {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
     }
     Start-Sleep -Seconds 3
+
+    # -----------------------------------------------------------------------------------------
+    Write-Step "Settings editor"
+    # -----------------------------------------------------------------------------------------
+    # Everything the editor offers must actually be there to edit.
+    $appSettings = Join-Path $AppRoot "DeltacastCaptureService\appsettings.json"
+    $appSettingsValid = $false
+    if (Test-Path $appSettings) {
+        try { Get-Content $appSettings -Raw | ConvertFrom-Json | Out-Null; $appSettingsValid = $true } catch { }
+    }
+    Add-Result "Settings" "Capture service appsettings.json present and valid JSON" $appSettingsValid $appSettings
+
+    $rawConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    foreach ($id in @("emerald-backend", "emerald-frontend", "liveedit-backend", "liveedit-frontend")) {
+        $service = $rawConfig.services | Where-Object { $_.id -eq $id }
+        $keys = @()
+        if ($service -and $service.environment) {
+            # "//" keys are the file's own annotations, not settings.
+            $keys = @($service.environment.PSObject.Properties.Name | Where-Object { -not $_.StartsWith("//") })
+        }
+        Add-Result "Settings" "$id has an editable environment block" ($keys.Count -gt 0) "$($keys.Count) setting(s)"
+    }
+
+    # The editor opens standalone via --settings, which is what the Start menu shortcut uses.
+    $settingsProcess = Start-Process -FilePath $launcherExe -ArgumentList "--settings" -PassThru
+    $settingsTitle = ""
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 800
+        $settingsProcess.Refresh()
+        if ($settingsProcess.HasExited) { break }
+        if ($settingsProcess.MainWindowTitle) { $settingsTitle = $settingsProcess.MainWindowTitle; break }
+    }
+    Add-Result "Settings" "Settings window opens standalone (--settings)" ($settingsTitle -like "*Settings*") "window title: '$settingsTitle'"
+    if (-not $settingsProcess.HasExited) { Stop-Process -Id $settingsProcess.Id -Force -ErrorAction SilentlyContinue }
+
+    # The elevated write helper, exercised directly against a scratch file. This is the path a save
+    # takes when the install directory is not writable by the signed-in user.
+    $helperSource = Join-Path $DataDirectory "settings-source.tmp"
+    $helperTarget = Join-Path $DataDirectory "settings-target.json"
+    Set-Content -LiteralPath $helperSource -Value '{ "written": "by helper" }' -Encoding utf8
+    Set-Content -LiteralPath $helperTarget -Value '{ "written": "original" }' -Encoding utf8
+    $helper = Start-Process -FilePath $launcherExe -ArgumentList @("--apply-settings", "`"$helperSource`"", "`"$helperTarget`"") -PassThru -Wait
+    $helperApplied = (Test-Path $helperTarget) -and ((Get-Content $helperTarget -Raw) -match "by helper")
+    Add-Result "Settings" "Elevated write helper applies the staged file" $helperApplied "exit code $($helper.ExitCode)"
+    Add-Result "Settings" "Elevated write helper keeps a .bak of the previous file" `
+        ((Test-Path "$helperTarget.bak") -and ((Get-Content "$helperTarget.bak" -Raw) -match "original")) "$helperTarget.bak"
 
     # -----------------------------------------------------------------------------------------
     Write-Step "Process tree"

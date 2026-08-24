@@ -252,6 +252,12 @@ foreach ($directory in @("services", "db", "wwwroot")) {
 Remove-Item -Recurse -Force (Join-Path $emeraldBackendStage "wwwroot\hls") -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path (Join-Path $emeraldBackendStage "wwwroot\hls") | Out-Null
 
+# The installed backend writes its logs to the data directory (EMERALD_LOG_PATH), never beside its
+# own code - Program Files is read-only for a standard user. Any logs folder here is therefore
+# either a leftover from a -SkipNpmInstall rebuild or a sign that something still writes in-tree;
+# either way it must not reach the package.
+Remove-Item -Recurse -Force (Join-Path $emeraldBackendStage "logs") -ErrorAction SilentlyContinue
+
 if (-not $SkipNpmInstall) {
     Write-Info "npm install --omit=dev (this is the slow step)"
     Invoke-Tool -FilePath $npm -WorkingDirectory $emeraldBackendStage -ToolArgs @("install", "--omit=dev", "--no-audit", "--no-fund")

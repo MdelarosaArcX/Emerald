@@ -21,6 +21,9 @@ public sealed class MainForm : Form
     private readonly Button _stopAllButton = new();
     private readonly Button _restartButton = new();
     private readonly Button _openLogsButton = new();
+    private readonly Button _settingsButton = new();
+    private readonly string _appRoot;
+    private readonly string _configPath;
     private readonly NotifyIcon _trayIcon = new();
     private readonly System.Windows.Forms.Timer _refreshTimer = new();
 
@@ -40,9 +43,17 @@ public sealed class MainForm : Form
     /// <summary>How much scrollback the pane keeps; the full log is on disk regardless.</summary>
     private const int MaxLogPaneLines = 500;
 
-    public MainForm(LauncherConfig config, List<ServiceSupervisor> supervisors, ProcessJob job, bool startMinimized)
+    public MainForm(
+        LauncherConfig config,
+        List<ServiceSupervisor> supervisors,
+        ProcessJob job,
+        bool startMinimized,
+        string appRoot,
+        string configPath)
     {
         _config = config;
+        _appRoot = appRoot;
+        _configPath = configPath;
         _supervisors = supervisors;
         _job = job;
 
@@ -168,10 +179,12 @@ public sealed class MainForm : Form
         ConfigureButton(_startAllButton, "Start All", async (_, _) => await StartAllAsync().ConfigureAwait(true));
         ConfigureButton(_stopAllButton, "Stop All", async (_, _) => await StopAllAsync().ConfigureAwait(true));
         ConfigureButton(_restartButton, "Restart Selected", async (_, _) => await RestartSelectedAsync().ConfigureAwait(true));
+        ConfigureButton(_settingsButton, "Settings...", (_, _) => OpenSettings());
         ConfigureButton(_openLogsButton, "Open Log Folder", (_, _) => OpenLogFolder());
         buttonPanel.Controls.Add(_startAllButton);
         buttonPanel.Controls.Add(_stopAllButton);
         buttonPanel.Controls.Add(_restartButton);
+        buttonPanel.Controls.Add(_settingsButton);
         buttonPanel.Controls.Add(_openLogsButton);
 
         var quitButton = new Button { Text = "Quit Suite", AutoSize = true, Height = 32, Padding = new Padding(12, 4, 12, 4) };
@@ -386,6 +399,70 @@ public sealed class MainForm : Form
     {
         _logView.SelectionStart = _logView.TextLength;
         _logView.ScrollToCaret();
+    }
+
+    /// <summary>
+    /// Opens the settings editor for the capture service's appsettings.json and each service's
+    /// environment. Both live in the install directory, which the launcher reads once at startup and
+    /// passes to each service as it spawns it — so a saved change needs a restart, which the editor
+    /// offers and this carries out.
+    /// </summary>
+    private void OpenSettings()
+    {
+        using var settings = new SettingsForm(_appRoot, _configPath);
+        settings.ShowDialog(this);
+
+        if (settings.RestartRequested)
+        {
+            _ = RestartSuiteAsync();
+            return;
+        }
+
+        if (settings.ChangesSaved)
+        {
+            _trayIcon.ShowBalloonTip(5000, "Emerald Deltacast Suite",
+                "Settings saved. Restart the suite to apply them.", ToolTipIcon.Info);
+        }
+    }
+
+    /// <summary>
+    /// Stops everything and starts a fresh launcher, which is what it takes to pick up an edited
+    /// configuration: the file is read once at startup, and each service receives its environment
+    /// only when it is spawned. The replacement waits on this process's own single-instance mutex
+    /// being released, so it cannot race the copy it is replacing.
+    /// </summary>
+    private async Task RestartSuiteAsync()
+    {
+        if (_quitting) return;
+        _quitting = true;
+        _refreshTimer.Stop();
+        _logDrainTimer.Stop();
+        _summaryLabel.Text = "Restarting the suite...";
+
+        CloseAppWindows();
+        await StopAllAsync().ConfigureAwait(true);
+
+        _trayIcon.Visible = false;
+        _trayIcon.Dispose();
+        _job.Dispose();
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--restarted")
+            {
+                UseShellExecute = false,
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                "The suite stopped but could not start itself again:\n\n" + ex.Message +
+                "\n\nStart it from the Start menu.",
+                "Emerald Deltacast Suite", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        Application.Exit();
     }
 
     private void OpenLogFolder()

@@ -1,7 +1,10 @@
 # Building the Installer
 
-How to turn a checkout into `EmeraldDeltacastSuite-Setup-<version>.exe`. Read this end to end the
-first time; after that, [The short version](#the-short-version) is all you need.
+How to turn a checkout into `EmeraldDeltacastSuite-Setup-<version>.exe`, and why it works the way
+it does.
+
+**Just want the commands?** [BUILD-STEPS.md](BUILD-STEPS.md) is the step-by-step walkthrough. This
+document is the reference behind it.
 
 ---
 
@@ -231,12 +234,31 @@ $sign = "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe"
 | `mediamtx.exe was not found` | Same for MediaMTX and `-MediaMtxPath` |
 | `Inno Setup 6 (ISCC.exe) was not found` | Not installed, or installed per-user where auto-detection missed it — pass `-IsccPath` |
 | `No ffmpeg.exe under ...` | Point `-FfmpegBinDir` at a real FFmpeg `bin` folder |
+| `npm error code ENOSPC` / `NU1900 ... not enough space on the disk` | The **system** drive is full, even if the build drive is not. npm and NuGet cache to `%LOCALAPPDATA%`, and MSBuild uses `%TEMP%` — see below |
 | `npm install failed with exit code ...` | Usually network or a native module failing to build; the npm output is directly above |
 | `... 'BEGIN' expected` from ISCC | A Pascal Script error in `setup.iss`. Note it has no local `const` sections — declare constants at unit scope |
 | ISCC exits 2 with no message | Seen once, transiently; re-running the same command succeeded. Suspect an antivirus scanner holding the freshly written output file |
 
 Every external command is checked for a non-zero exit code, so a failure stops the build rather than
 quietly producing a package with half a dependency tree in it.
+
+### Building when the system drive is full
+
+The staging tree and the output go to whichever drive the repository is on, but the toolchain still
+writes to the system drive: npm and NuGet cache under `%LOCALAPPDATA%`, and MSBuild and Inno Setup
+use `%TEMP%`. A full `C:` therefore fails the build even with hundreds of gigabytes free where the
+repository lives. Redirect all three for the session:
+
+```powershell
+$env:TEMP = "I:\build-temp"; $env:TMP = $env:TEMP
+$env:npm_config_cache = "I:\build-temp\npm-cache"
+New-Item -ItemType Directory -Force -Path $env:TEMP, $env:npm_config_cache | Out-Null
+
+.\Installer\build\build-installer.ps1 -Version 1.2.0
+```
+
+This is a way round a full disk for one build, not a fix for one — the redirected cache starts empty,
+so that build re-downloads every npm package. Free space on the system drive properly when you can.
 
 ## 11. What ends up in the package
 

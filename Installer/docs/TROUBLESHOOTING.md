@@ -57,6 +57,13 @@ running from a *development* checkout will collide with the installed one on eve
 Confirm `C:\ProgramData\EmeraldDeltacastSuite\db` exists and that your account can write to it; the
 installer creates it with modify rights for Users.
 
+**`EPERM: operation not permitted, mkdir '...\Emerald\backend\logs'`.** The backend is trying to
+write its logs beside its own code, inside Program Files, which is read-only for a standard user.
+`EMERALD_LOG_PATH` is missing from the `emerald-backend` service's `environment` block in
+`config\launcher.config.json` — it should be `{DATA}\logs`. Compare your config against
+`launcher.config.default.json`; an upgrade never overwrites your copy, so a config edited before
+this setting existed will not have it.
+
 **MediaMTX not found.** The message names the path it tried. Check `MEDIAMTX_PATH` in
 `config\launcher.config.json` points at `{APP}\MediaMtx\mediamtx.exe` and that the file is there.
 

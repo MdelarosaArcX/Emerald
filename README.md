@@ -19,7 +19,8 @@ powershell -ExecutionPolicy Bypass -File Installer\build\test-suite.ps1
 
 | Document | For |
 | --- | --- |
-| [Installer/docs/BUILDING.md](Installer/docs/BUILDING.md) | **The build process** — prerequisites, every step, options, release checklist, failure modes |
+| [Installer/docs/BUILD-STEPS.md](Installer/docs/BUILD-STEPS.md) | **Building the installer, step by step** |
+| [Installer/docs/BUILDING.md](Installer/docs/BUILDING.md) | Build reference — prerequisites, every option, release checklist, failure modes |
 | [Installer/docs/GETTING-STARTED.md](Installer/docs/GETTING-STARTED.md) | Operators — install, run, where files live |
 | [Installer/docs/CONFIGURATION.md](Installer/docs/CONFIGURATION.md) | Every setting in `launcher.config.json` |
 | [Installer/docs/ARCHITECTURE.md](Installer/docs/ARCHITECTURE.md) | How the packaged suite fits together and why |

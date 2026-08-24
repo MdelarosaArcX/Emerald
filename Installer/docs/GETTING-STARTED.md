@@ -107,6 +107,7 @@ side-by-side view.
 | Close a UI without stopping anything | Close that application window — the services keep running |
 | Hide the control panel | Close the window — the suite keeps running in the notification area |
 | Bring it back | Double-click the tray icon, or right-click → *Open Control Panel* |
+| Change a setting | **Settings…** in the control panel, or *Emerald Deltacast Suite Settings* in the Start menu |
 | Restart one service | Select its row, click **Restart Selected** |
 | Stop everything but stay open | **Stop All** |
 | Shut the suite down completely | **Quit Suite**, or tray → *Quit Suite* |
@@ -119,6 +120,19 @@ at a UI whose backend has just gone.
 
 If a service crashes, the launcher restarts it automatically up to three times before giving up
 and marking the row red.
+
+## Changing settings
+
+**Settings…** in the control panel opens one screen covering all five services: the capture
+service's `appsettings.json` (board and channel indexes, resolution, frame rate) and each service's
+own settings — ports, storage paths, the database, FFmpeg and MediaMTX locations.
+
+The same screen is in the Start menu as **Emerald Deltacast Suite Settings**, which opens it without
+starting anything — the way in when a bad setting is what is stopping the suite from starting.
+
+Saving prompts for administrator rights (the files live under Program Files), keeps the previous
+version as `.bak`, and offers to restart the suite so the change takes effect. Full reference:
+[CONFIGURATION.md](CONFIGURATION.md).
 
 ## Where your files live
 
@@ -160,3 +174,20 @@ Run the newer installer over the top. It offers to close a running suite first, 
 program files, and **keeps your `config\launcher.config.json` exactly as you edited it**. The
 version that shipped with the new build is written alongside it as `launcher.config.default.json`
 so you can diff the two.
+
+That protection cuts both ways: a release that adds a **new** setting cannot add it to your file
+either. After upgrading, compare the two:
+
+```powershell
+cd "C:\Program Files\Emerald Deltacast Suite\config"
+Compare-Object (Get-Content launcher.config.json) (Get-Content launcher.config.default.json)
+```
+
+If you have not customised anything, the simplest course is to take the new file wholesale:
+
+```powershell
+Copy-Item launcher.config.default.json launcher.config.json -Force
+```
+
+A missing new setting usually shows up as one service failing with a path error in its log — see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).

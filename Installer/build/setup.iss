@@ -109,6 +109,9 @@ Name: "{group}\LiveEdit"; Filename: "{app}\Launcher\{#LauncherExe}"; Parameters:
 Name: "{group}\{#AppName} Control Panel"; Filename: "{app}\Launcher\{#LauncherExe}"; \
     WorkingDir: "{app}\Launcher"; IconFilename: "{app}\Launcher\emerald.ico"; \
     Comment: "Start, stop and monitor the suite's services"
+Name: "{group}\{#AppName} Settings"; Filename: "{app}\Launcher\{#LauncherExe}"; Parameters: "--settings"; \
+    WorkingDir: "{app}\Launcher"; IconFilename: "{app}\Launcher\emerald.ico"; \
+    Comment: "Edit the capture service and per-service settings"
 Name: "{group}\{#AppName} Documentation"; Filename: "{app}\docs"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 

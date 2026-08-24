@@ -7,6 +7,12 @@ internal static class Program
     /// <summary>Name of the mutex that keeps a second launcher from fighting over the same ports.</summary>
     internal const string SingleInstanceMutex = @"Global\EmeraldDeltacastSuiteLauncher";
 
+    /// <summary>The install directory — one level above the launcher's own folder.</summary>
+    internal static string AppRoot { get; private set; } = "";
+
+    /// <summary>The service map the settings editor reads and writes.</summary>
+    internal static string ConfigPath { get; private set; } = "";
+
     /// <summary>
     /// One executable, three modes. Run with no arguments it is the control panel that supervises
     /// the five services; run as <c>--app emerald</c> or <c>--app liveedit</c> it is that
@@ -18,11 +24,22 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        // Elevated helper for the settings editor. Must run before anything else: it deliberately
+        // does not read the configuration, because the whole point of this mode is to repair or
+        // replace a configuration file that the unelevated process could not write.
+        if (args.Length >= 3 && args[0].Equals("--apply-settings", StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.ExitCode = ApplySettingsFile(args[1], args[2]);
+            return;
+        }
+
         // The launcher lives in {APP}\Launcher, so the install root is one level up. BaseDirectory
         // (not Assembly.Location) because it stays correct however the app is published.
         var launcherDirectory = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
         var appRoot = Path.GetDirectoryName(launcherDirectory)!;
         var configPath = Path.Combine(appRoot, "config", "launcher.config.json");
+        AppRoot = appRoot;
+        ConfigPath = configPath;
 
         LauncherConfig config;
         try
@@ -38,6 +55,17 @@ internal static class Program
             return;
         }
 
+        // Opens the settings editor on its own, without starting or touching the services — for the
+        // Start menu shortcut, and for fixing a configuration that is stopping the suite from
+        // starting in the first place.
+        if (args.Any(a => a.Equals("--settings", StringComparison.OrdinalIgnoreCase) ||
+                          a.Equals("/settings", StringComparison.OrdinalIgnoreCase)))
+        {
+            using var settingsOnly = new SettingsForm(appRoot, configPath);
+            Application.Run(settingsOnly);
+            return;
+        }
+
         var requestedApp = ReadAppArgument(args);
         if (requestedApp is not null)
         {
@@ -46,6 +74,32 @@ internal static class Program
         }
 
         RunControlPanel(config, args);
+    }
+
+    /// <summary>
+    /// Copies a staged settings file over its target with administrator rights, keeping one backup.
+    /// Invoked by the settings editor via <c>runas</c> when the install directory is not writable by
+    /// the signed-in user, which is the normal case under Program Files.
+    /// </summary>
+    private static int ApplySettingsFile(string sourcePath, string targetPath)
+    {
+        try
+        {
+            if (!File.Exists(sourcePath)) return 2;
+
+            var directory = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+
+            SettingsForm.BackupFile(targetPath);
+            File.Copy(sourcePath, targetPath, overwrite: true);
+            return 0;
+        }
+        catch
+        {
+            // No UI here: this process is invisible to the operator, and the caller reports the
+            // failure through the settings window that is still open behind it.
+            return 1;
+        }
     }
 
     /// <summary>Reads <c>--app &lt;id&gt;</c> (or <c>--app=&lt;id&gt;</c>) from the command line.</summary>
@@ -99,8 +153,24 @@ internal static class Program
 
     private static void RunControlPanel(LauncherConfig config, string[] args)
     {
-        using var singleInstance = new Mutex(true, SingleInstanceMutex, out var isOnlyInstance);
-        if (!isOnlyInstance)
+        // --restarted means the settings editor asked the previous copy to relaunch us. That copy is
+        // still shutting its services down and still holds the mutex, so wait for it rather than
+        // reporting "already running" and leaving the operator with no suite at all.
+        var restarted = args.Any(a => a.Equals("--restarted", StringComparison.OrdinalIgnoreCase));
+
+        using var singleInstance = new Mutex(false, SingleInstanceMutex);
+        bool acquired;
+        try
+        {
+            acquired = singleInstance.WaitOne(restarted ? TimeSpan.FromSeconds(60) : TimeSpan.Zero, false);
+        }
+        catch (AbandonedMutexException)
+        {
+            // The previous holder exited without releasing it — we now own it, which is what we want.
+            acquired = true;
+        }
+
+        if (!acquired)
         {
             MessageBox.Show(
                 "Emerald Deltacast Suite is already running. Use its tray icon to reopen the control panel.",
@@ -130,11 +200,12 @@ internal static class Program
             a.Equals("--minimized", StringComparison.OrdinalIgnoreCase) ||
             a.Equals("/minimized", StringComparison.OrdinalIgnoreCase));
 
-        using var form = new MainForm(config, supervisors, job, startMinimized);
+        using var form = new MainForm(config, supervisors, job, startMinimized, AppRoot, ConfigPath);
         Application.Run(form);
 
         foreach (var supervisor in supervisors) supervisor.Dispose();
         job.Dispose();
+        try { singleInstance.ReleaseMutex(); } catch { }
     }
 
     /// <summary>

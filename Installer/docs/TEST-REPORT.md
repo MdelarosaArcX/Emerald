@@ -6,12 +6,12 @@ outright to confirm the process tree dies with it.
 
 | | |
 | --- | --- |
-| Run | 2026-08-21 11:10:46 +10:00 |
+| Run | 2026-08-24 11:33:15 +10:00 |
 | Machine | SYDNEYIGNIS2 (Microsoft Windows 10 Pro) |
-| Payload | `I:\EmeraldDeltacast\Installer\stage` |
-| Version | 1.1.0 built 2026-08-21T11:04:27+10:00 |
+| Payload | `I:\EmeraldDeltacast\Emerald\Installer\stage` |
+| Version | 1.2.0 built 2026-08-24T11:29:17+10:00 |
 | Node | v22.22.0 (bundled) |
-| Result | **66 passed, 0 failed** |
+| Result | **76 passed, 0 failed** |
 
 ## Scope
 
@@ -106,33 +106,35 @@ verified as far as starting, reading its configuration and serving its control s
 
 | Result | Check | Detail |
 | --- | --- | --- |
-| PASS | logs created under the data directory | C:\Users\SYDNEY~1\AppData\Local\Temp\EmeraldSuiteTestData\logs |
-| PASS | Recordings created under the data directory | C:\Users\SYDNEY~1\AppData\Local\Temp\EmeraldSuiteTestData\Recordings |
-| PASS | Exports created under the data directory | C:\Users\SYDNEY~1\AppData\Local\Temp\EmeraldSuiteTestData\Exports |
-| PASS | EditCaptures created under the data directory | C:\Users\SYDNEY~1\AppData\Local\Temp\EmeraldSuiteTestData\EditCaptures |
-| PASS | db created under the data directory | C:\Users\SYDNEY~1\AppData\Local\Temp\EmeraldSuiteTestData\db |
-| PASS | LiveEdit created under the data directory | C:\Users\SYDNEY~1\AppData\Local\Temp\EmeraldSuiteTestData\LiveEdit |
-| PASS | SQLite database created outside Program Files | C:\Users\SYDNEY~1\AppData\Local\Temp\EmeraldSuiteTestData\db\emerald.sqlite |
+| PASS | logs created under the data directory | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\logs |
+| PASS | Recordings created under the data directory | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\Recordings |
+| PASS | Exports created under the data directory | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\Exports |
+| PASS | EditCaptures created under the data directory | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\EditCaptures |
+| PASS | db created under the data directory | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\db |
+| PASS | LiveEdit created under the data directory | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\LiveEdit |
+| PASS | SQLite database created outside Program Files | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\db\emerald.sqlite |
+| PASS | Backend timecode log written to the data directory | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\logs\timecode.log |
+| PASS | Nothing written inside the install tree | no logs folder beside the backend code |
 
 ## Logs
 
 | Result | Check | Detail |
 | --- | --- | --- |
-| PASS | Emerald Backend wrote a log file | 1 KB |
+| PASS | Emerald Backend wrote a log file | 0.9 KB |
 | PASS | Emerald Backend log is free of errors | no errors logged |
 | PASS | Emerald Frontend wrote a log file | 0.4 KB |
 | PASS | Emerald Frontend log is free of errors | no errors logged |
-| PASS | LiveEdit Backend wrote a log file | 7.7 KB |
+| PASS | LiveEdit Backend wrote a log file | 1.2 KB |
 | PASS | LiveEdit Backend log is free of errors | no errors logged |
 | PASS | LiveEdit Frontend wrote a log file | 0.4 KB |
 | PASS | LiveEdit Frontend log is free of errors | no errors logged |
-| PASS | Deltacast Capture wrote a log file | 1181.9 KB |
+| PASS | Deltacast Capture wrote a log file | 221.2 KB |
 
 ## Configuration
 
 | Result | Check | Detail |
 | --- | --- | --- |
-| PASS | Capture service reads appsettings.json from the install folder | content root: I:\EmeraldDeltacast\Installer\stage\DeltacastCaptureService |
+| PASS | Capture service reads appsettings.json from the install folder | content root: I:\EmeraldDeltacast\Emerald\Installer\stage\DeltacastCaptureService |
 
 ## Desktop apps
 
@@ -142,11 +144,24 @@ verified as far as starting, reading its configuration and serving its control s
 | PASS | LiveEdit has its own icon | liveedit.ico |
 | PASS | Emerald Capture opens a native window | window title: 'Emerald Capture - Emerald Streaming' |
 | PASS | Emerald Capture loads its UI in the window | document title 'Emerald Streaming' reached the window title |
-| PASS | LiveEdit opens a native window | window title: 'LiveEdit - Dashboard · Emerald Live Edit' |
+| PASS | LiveEdit opens a native window | window title: 'LiveEdit - Emerald Live Edit' |
 | PASS | LiveEdit loads its UI in the window | document title 'Emerald Live Edit' reached the window title |
 | PASS | Windows are WebView2-hosted, not a browser | 12 msedgewebview2 host process(es) |
 | PASS | No browser was launched for the UIs | no browser process started by opening the apps |
 | PASS | Re-launching an app raises the existing window | second instance exited instead of opening a duplicate |
+
+## Settings
+
+| Result | Check | Detail |
+| --- | --- | --- |
+| PASS | Capture service appsettings.json present and valid JSON | I:\EmeraldDeltacast\Emerald\Installer\stage\DeltacastCaptureService\appsettings.json |
+| PASS | emerald-backend has an editable environment block | 17 setting(s) |
+| PASS | emerald-frontend has an editable environment block | 5 setting(s) |
+| PASS | liveedit-backend has an editable environment block | 7 setting(s) |
+| PASS | liveedit-frontend has an editable environment block | 5 setting(s) |
+| PASS | Settings window opens standalone (--settings) | window title: 'Emerald Deltacast Suite — Settings' |
+| PASS | Elevated write helper applies the staged file | exit code 0 |
+| PASS | Elevated write helper keeps a .bak of the previous file | I:\EmeraldDeltacast\.buildtemp\EmeraldSuiteTestData\settings-target.json.bak |
 
 ## Processes
 

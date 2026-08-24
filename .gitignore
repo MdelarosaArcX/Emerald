@@ -17,7 +17,9 @@ backend/logs/logs.txt
 # from `Installer\build\build-installer.ps1`. Neither belongs in git (GitHub
 # rejects any single file over 100 MB outright); ship the setup executable as a
 # release asset instead.
+
 Installer/stage/
 Installer/*.exe
+
 # Cached download of the WebView2 evergreen bootstrapper.
 Installer/build/redist/

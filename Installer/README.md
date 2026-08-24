@@ -10,16 +10,17 @@ frontend).
 From the repository root:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File Installer\build\build-installer.ps1 -Version 1.1.0
+powershell -ExecutionPolicy Bypass -File Installer\build\build-installer.ps1 -Version 1.2.0
 ```
 
-Produces `Installer\EmeraldDeltacastSuite-Setup-1.1.0.exe` — about 470 MB, 10–20 minutes from cold.
+Produces `Installer\EmeraldDeltacastSuite-Setup-1.2.0.exe` — about 470 MB, 10–20 minutes from cold.
 
 Needs the .NET 8 SDK, Node 20+, Inno Setup 6 and a Windows FFmpeg build — **and two components that
 live outside this repository**: `DeltacastCaptureService` and `MediaMtx`, expected as siblings of the
 repository folder or pointed at with `-CaptureServicePath` / `-MediaMtxPath`. The full build process,
 every option, the release checklist and the known failure modes are in
-[docs/BUILDING.md](docs/BUILDING.md).
+[docs/BUILDING.md](docs/BUILDING.md); the step-by-step walkthrough is
+[docs/BUILD-STEPS.md](docs/BUILD-STEPS.md).
 
 Build output is deliberately **not** committed: `Installer\stage\` (~1.7 GB) and `Installer\*.exe`
 (~470 MB) are in the repository's `.gitignore`, since a single file that size is past GitHub's hard
@@ -38,11 +39,12 @@ launcher to confirm nothing is left running. Writes [docs/TEST-REPORT.md](docs/T
 
 | Document | For |
 | --- | --- |
+| [BUILD-STEPS.md](docs/BUILD-STEPS.md) | **Building it, step by step** — the short walkthrough |
 | [GETTING-STARTED.md](docs/GETTING-STARTED.md) | Operators — install, run, where files live |
-| [CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting in `launcher.config.json` |
+| [CONFIGURATION.md](docs/CONFIGURATION.md) | The settings editor, and every setting in `launcher.config.json` |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the suite fits together and why |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | When something is red |
-| [BUILDING.md](docs/BUILDING.md) | Building, signing and shipping the installer |
+| [BUILDING.md](docs/BUILDING.md) | Build reference — every option, release checklist, failure modes |
 | [TEST-REPORT.md](docs/TEST-REPORT.md) | Results of the last verification run |
 | [LICENSE-NOTICES.txt](docs/LICENSE-NOTICES.txt) | Third-party licences (FFmpeg, Node, MediaMTX, .NET) |
 
@@ -61,7 +63,8 @@ Installer\
 │   ├── ServiceSupervisor.cs  one per service: start, health-check, log, restart, stop
 │   ├── ProcessJob.cs         job object so ffmpeg/mediamtx die with the launcher
 │   ├── MainForm.cs           control panel, tray icon, log pane
-│   └── AppWindow.cs          the WebView2 desktop window for Emerald Capture / LiveEdit
+│   ├── AppWindow.cs          the WebView2 desktop window for Emerald Capture / LiveEdit
+│   └── SettingsForm.cs       the settings editor for appsettings.json and each service's environment
 ├── runtime\
 │   ├── static-server.js      serves each built frontend and proxies its backend paths
 │   └── launcher.config.json  the shipped service map
@@ -80,9 +83,12 @@ Two of the four packaged components live outside this repository — `..\Deltaca
   window with its own icon and taskbar entry — no browser. Behind them, the control panel starts
   the services in dependency order, waits for each to answer a health endpoint before starting the
   next, tails their logs, restarts them if they crash, and stops them in reverse order.
-- **One executable, three modes.** `EmeraldLauncher.exe` is the control panel; `--app emerald` and
-  `--app liveedit` are the two application windows. Sharing a binary avoids shipping a second copy
-  of the self-contained .NET runtime.
+- **One executable, four modes.** `EmeraldLauncher.exe` is the control panel; `--app emerald` and
+  `--app liveedit` are the two application windows; `--settings` opens the settings editor on its
+  own. Sharing a binary avoids shipping a second copy of the self-contained .NET runtime.
+- **Settings are edited in the app.** One screen covers the capture service's `appsettings.json` and
+  every service's environment, validated before saving, elevating only when the target needs it, and
+  keeping a `.bak` each time.
 - **Nothing to install first.** Node, the .NET runtime, FFmpeg and MediaMTX are bundled. The
   external dependencies are Deltacast's board driver, which cannot be redistributed, and Microsoft's
   Edge WebView2 runtime, which is a Windows component setup installs if it is somehow absent.

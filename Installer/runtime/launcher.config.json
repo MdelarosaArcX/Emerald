@@ -75,6 +75,8 @@
         "EMERALD_RECORDINGS_PATH": "{DATA}\\Recordings",
         "EMERALD_EXPORTS_PATH": "{DATA}\\Exports",
         "EMERALD_EDIT_CAPTURE_PATH": "{DATA}\\EditCaptures",
+        "//EMERALD_LOG_PATH": "The backend's own event log and timecode log. Must not default to backend/logs here - that is under Program Files and read-only for a standard user, so creating it fails with EPERM.",
+        "EMERALD_LOG_PATH": "{DATA}\\logs",
         "DATABASE_TYPE": "sqlite",
         "DATABASE_PATH": "{DATA}\\db\\emerald.sqlite",
         "FFMPEG_PATH": "{APP}\\ffmpeg\\bin\\ffmpeg.exe",

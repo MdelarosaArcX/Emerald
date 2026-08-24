@@ -1,5 +1,65 @@
 # Configuration Reference
 
+## The settings editor
+
+Most changes do not need a text editor at all. The control panel has a **Settings…** button, and
+there is a **Emerald Deltacast Suite Settings** entry in the Start menu that opens the same window
+without starting the services — useful when a bad setting is what is stopping them.
+
+Five sections, one per service:
+
+| Section | What it edits | Where it lands |
+| --- | --- | --- |
+| **Deltacast Capture** | `appsettings.json` — board and channel indexes, pixel format, resolution, frame rate, edit-capture segmenting, on-air preview | `{APP}\DeltacastCaptureService\appsettings.json` |
+| **Emerald — Backend** | Storage paths, database, FFmpeg/MediaMTX locations, RTMP and timecode settings | `services[emerald-backend].environment` |
+| **Emerald — Frontend** | Port, bind address, proxied paths | `services[emerald-frontend].environment` |
+| **LiveEdit — Backend** | Port, CORS origin, where Emerald's media is read from | `services[liveedit-backend].environment` |
+| **LiveEdit — Frontend** | Port, bind address, proxied paths (including socket.io) | `services[liveedit-frontend].environment` |
+
+The capture service section is raw JSON and is checked for syntax before it will save — a malformed
+`appsettings.json` stops that service from starting at all, so it is worth catching before the write
+rather than after the next restart.
+
+The four service sections are shown in `.env` syntax (`NAME=value`, `#` for comments) because that
+is the shape people expect, but they are written back into `launcher.config.json`. **That file, not
+a `.env`, is what configures an installed backend** — see the note below. `{APP}` and `{DATA}` tokens
+are read and written raw, so they survive editing instead of being flattened into absolute paths.
+
+Three things worth knowing:
+
+- **Saving needs administrator rights.** The install directory is under Program Files, so a save
+  raises a UAC prompt, stages the file, and copies it into place elevated. Decline the prompt and
+  nothing is written.
+- **The previous version is kept** as `<file>.bak` beside the original, on every save.
+- **Changes apply on restart.** The launcher reads the configuration once at startup and hands each
+  service its environment as it spawns it. After saving you are offered a restart, which stops
+  everything, closes the application windows and relaunches the suite.
+
+### Why there is no `.env` to edit
+
+In a development checkout each backend reads a `.env` beside its code, via dotenv. The installed
+suite works differently, and editing a `.env` there would be editing a file nothing reads:
+
+- the backends run from a **read-only** Program Files with their working directory elsewhere, so
+  dotenv finds no `.env` at all; and
+- every value they need is supplied by the launcher, and dotenv **never overwrites a variable that
+  is already set** — so even a `.env` in the right place would lose to `launcher.config.json` for
+  every key the launcher sets, silently.
+
+The environment blocks are therefore the single source of truth, and the editor presents them in
+`.env` syntax rather than inventing a second one that would quietly not work.
+
+### What cannot be changed after installation
+
+The two frontends are compiled bundles. Their `VITE_*` values — notably LiveEdit's
+`VITE_EMERALD_API_BASE_URL` and `VITE_EMERALD_MONITOR_BASE_URL` — are baked in by Vite at build time
+and are shown read-only in the editor, with the values this build used. Changing them means
+rebuilding the installer with `-EmeraldApiBaseUrl` / `-EmeraldMonitorBaseUrl`; see
+[BUILDING.md](BUILDING.md). Everything genuinely adjustable at runtime (port, bind address, proxy
+target) is editable.
+
+## The configuration file
+
 Everything the launcher knows about the five services lives in one file:
 
 ```
@@ -189,7 +249,8 @@ Instead of the bundled SQLite file:
 | `EMERALD_RECORDINGS_PATH` | `{DATA}\Recordings` | Recording output |
 | `EMERALD_EXPORTS_PATH` | `{DATA}\Exports` | Exported clips |
 | `EMERALD_EDIT_CAPTURE_PATH` | `{DATA}\EditCaptures` | Segmented edit capture |
-| `EMERALD_BACKUP_PATH` | *(unset)* | Secondary copy target |
+| `EMERALD_LOG_PATH` | `{DATA}\logs` | The backend's event log (`logs.txt`) and timecode log (`timecode.log`) |
+| `EMERALD_BACKUP_PATH` | *(unset — the backend then falls back to `E:\`)* | Secondary copy target for recordings |
 | `DATABASE_TYPE` / `DATABASE_PATH` | `sqlite` / `{DATA}\db\emerald.sqlite` | Metadata store |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | Bundled build | Media tools |
 | `MEDIAMTX_PATH` / `MEDIAMTX_CONFIG_PATH` | Bundled build | RTSP/WebRTC server the backend starts |
