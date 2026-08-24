@@ -1632,3 +1632,26 @@ button.crumb:hover {
     max-height: none;
   }
 }
+
+/* Reported-not-editable value in a configuration grid — e.g. the detected capture format, which
+   follows the signal on the wire rather than being chosen. Styled to read as information, not as a
+   disabled input an operator might try to click. */
+.value-static {
+  color: rgba(185, 194, 219, 0.75);
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 0.8rem;
+}
+
+/* Explains why a hardware selection has not taken effect yet. Spans the grid so a full sentence
+   fits without squeezing the fields either side of it. */
+.hardware-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: rgba(84, 247, 180, 0.85);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.hardware-note.warn {
+  color: rgba(255, 154, 118, 0.85);
+}

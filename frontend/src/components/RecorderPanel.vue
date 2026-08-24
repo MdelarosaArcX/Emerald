@@ -1,12 +1,65 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRecorderStore } from "../stores/recorder";
 import { useAudioCalibrationStore } from "../stores/audioCalibration";
 import { useCaptureHealthStore } from "../stores/captureHealth";
+import { useDeltacastHardwareStore } from "../stores/deltacastHardware";
 
 const recorder = useRecorderStore();
 const audioCalibration = useAudioCalibrationStore();
 const captureHealth = useCaptureHealthStore();
+const hardware = useDeltacastHardwareStore();
+
+/**
+ * The capture leg's board/channel, as the service has them configured.
+ *
+ * Read from the hardware report rather than held in this panel's own settings because they are not
+ * this panel's to own: they live in DeltacastCaptureService's appsettings.json and are read once at
+ * startup, since the SDI channel a capture is bound to cannot be swapped under a running stream.
+ * Selecting here therefore stages a change and says a restart is needed, rather than pretending it
+ * took effect.
+ */
+const captureBoard = computed({
+  get: () => stagedCaptureBoard.value ?? hardware.inUse?.capture.boardIndex ?? 0,
+  set: (value: number) => {
+    stagedCaptureBoard.value = Number(value);
+    // A channel index only means anything against a board — keeping the old one across a board
+    // change would silently point at a different physical connector, or at none.
+    stagedCaptureChannel.value = hardware.rxChannels(Number(value))[0]?.channelIndex ?? 0;
+  },
+});
+
+const captureChannel = computed({
+  get: () => stagedCaptureChannel.value ?? hardware.inUse?.capture.channelIndex ?? 0,
+  set: (value: number) => { stagedCaptureChannel.value = Number(value); },
+});
+
+const stagedCaptureBoard = ref<number | null>(null);
+const stagedCaptureChannel = ref<number | null>(null);
+
+/** True once a selection differs from what the service is actually running. */
+const captureSelectionChanged = computed(() =>
+  hardware.inUse !== null
+  && (captureBoard.value !== hardware.inUse.capture.boardIndex
+    || captureChannel.value !== hardware.inUse.capture.channelIndex),
+);
+
+/**
+ * The geometry actually being captured, which is what an operator wants to see here.
+ *
+ * The configured Width/Height are only a fallback: the capture leg follows the video standard the
+ * board detects on the wire (see DeltacastSdkService), so showing the configured pair as if it were
+ * the truth would misreport a 1080i source as whatever appsettings happened to say.
+ */
+const captureGeometry = computed(() => {
+  const leg = hardware.inUse?.capture;
+  if (!leg) return "—";
+  if (leg.detectedWidth && leg.detectedHeight) {
+    const rate = leg.detectedFrameRate ? `@${leg.detectedFrameRate}` : "";
+    return `${leg.detectedWidth}x${leg.detectedHeight}${rate}${leg.detectedStandard ? ` · ${leg.detectedStandard}` : ""} (detected)`;
+  }
+  return `${leg.width ?? "—"}x${leg.height ?? "—"} (configured, no signal)`;
+});
 
 const activeStreams = computed(() => recorder.ingestStatus?.activeStreams.join(", ") || "None");
 const recordingCount = computed(() => recorder.recordings.length);
@@ -57,15 +110,23 @@ function stepAudioOffset(frames: number) {
 
 let calibrationHandle: number | null = null;
 
+let hardwareHandle: number | null = null;
+
 onMounted(() => {
   audioCalibration.refresh();
   // Slow poll: this value only changes when someone changes it, but the capture service can
   // restart underneath us and the control needs to notice it came back.
   calibrationHandle = window.setInterval(() => audioCalibration.refresh(), 5000);
+
+  // The board list itself is static, but which channels carry signal and which leg holds what is
+  // not — and the service restarting is exactly when this panel needs to notice.
+  hardware.fetch();
+  hardwareHandle = window.setInterval(() => hardware.fetch(), 5000);
 });
 
 onUnmounted(() => {
   if (calibrationHandle) window.clearInterval(calibrationHandle);
+  if (hardwareHandle) window.clearInterval(hardwareHandle);
 });
 
 function formatTimecode(totalSeconds: number) {
@@ -113,6 +174,58 @@ function pad(value: number) {
         <span>Broadcast Delay</span>
         <input v-model="broadcastDelayTimecode" class="compact-input" inputmode="numeric" />
       </label>
+
+      <!-- SDI capture source. Enumerated from the hardware itself, so the lists only ever contain
+           boards and channels that physically exist — see stores/deltacastHardware.ts. -->
+      <label class="field-row field-wide" title="Which DELTACAST board the programme feed is captured from.">
+        <span>Capture Board</span>
+        <select
+          v-model.number="captureBoard"
+          class="compact-select auto-select"
+          :disabled="!hardware.inventoryAvailable"
+        >
+          <option v-for="board in hardware.rxBoards" :key="board.boardIndex" :value="board.boardIndex">
+            {{ board.label }} — {{ board.rxChannelCount }} RX / {{ board.txChannelCount }} TX
+          </option>
+          <option v-if="!hardware.rxBoards.length" :value="captureBoard">
+            {{ hardware.loading ? "Reading hardware…" : "No SDI boards detected" }}
+          </option>
+        </select>
+      </label>
+
+      <label class="field-row field-wide" title="Which SDI input on that board. 'signal' means the board has locked to something on that connector right now.">
+        <span>Capture Channel</span>
+        <select
+          v-model.number="captureChannel"
+          class="compact-select auto-select"
+          :disabled="!hardware.inventoryAvailable"
+        >
+          <option
+            v-for="channel in hardware.rxChannels(captureBoard)"
+            :key="channel.channelIndex"
+            :value="channel.channelIndex"
+          >
+            {{ hardware.channelLabel(captureBoard, channel.channelIndex, "rx") }}
+          </option>
+          <option v-if="!hardware.rxChannels(captureBoard).length" :value="captureChannel">
+            No SDI inputs on this board
+          </option>
+        </select>
+      </label>
+
+      <!-- Resolution is reported, not chosen: the capture leg follows the standard the board
+           detects on the wire, so offering it as a setting would be offering a lie. -->
+      <div class="field-row field-wide" title="The video standard the board has detected on the selected input. Capture follows the signal rather than a configured size.">
+        <span>Capture Format</span>
+        <span class="value-static">{{ captureGeometry }}</span>
+      </div>
+
+      <p v-if="captureSelectionChanged" class="hardware-note">
+        Board/channel staged — DeltacastCaptureService reads these once at startup, so restart it to
+        capture from {{ hardware.channelLabel(captureBoard, captureChannel, "rx").split(" (")[0] }}
+        on board {{ captureBoard }}.
+      </p>
+      <p v-else-if="hardware.message" class="hardware-note warn">{{ hardware.message }}</p>
 
       <!-- Lip-sync calibration. Applies to the live preview within about a second so it can be
            tuned by eye; a running recording keeps the value it started with. -->

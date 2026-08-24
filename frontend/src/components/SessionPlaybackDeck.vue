@@ -3,8 +3,39 @@ import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "v
 import { useSessionPlaybackStore } from "../stores/sessionPlayback";
 import { useTxStore } from "../stores/tx";
 import { useMonitorAudio } from "../composables/useMonitorAudio";
+import { useDeltacastHardwareStore } from "../stores/deltacastHardware";
 
 const sessionPlayback = useSessionPlaybackStore();
+const hardware = useDeltacastHardwareStore();
+
+/**
+ * Which SDI output transmits. Staged rather than applied: DeltacastCaptureService binds the TX
+ * channel when it opens the stream and there is no runtime switch, so selecting here records the
+ * intent and the panel says a restart is needed instead of implying it took effect.
+ */
+const stagedTxBoard = ref<number | null>(null);
+const stagedTxChannel = ref<number | null>(null);
+
+const txBoard = computed({
+  get: () => stagedTxBoard.value ?? hardware.inUse?.transmit.boardIndex ?? 0,
+  set: (value: number) => {
+    stagedTxBoard.value = Number(value);
+    // A channel index is only meaningful against its board — carrying the old one over would point
+    // at a different physical connector.
+    stagedTxChannel.value = hardware.txChannels(Number(value))[0]?.channelIndex ?? 0;
+  },
+});
+
+const txChannel = computed({
+  get: () => stagedTxChannel.value ?? hardware.inUse?.transmit.channelIndex ?? 0,
+  set: (value: number) => { stagedTxChannel.value = Number(value); },
+});
+
+const txSelectionChanged = computed(() =>
+  hardware.inUse !== null
+  && (txBoard.value !== hardware.inUse.transmit.boardIndex
+    || txChannel.value !== hardware.inUse.transmit.channelIndex),
+);
 const tx = useTxStore();
 const video = ref<HTMLVideoElement | null>(null);
 
@@ -180,7 +211,7 @@ onMounted(async () => {
     // available, but the rest of the page (folder selection, Push On Air, Tidal Lock) still works.
   }
 
-  await Promise.all([sessionPlayback.loadSessions(), sessionPlayback.loadRecorderStatus(), tx.refresh(), refreshOnAirDelay()]);
+  await Promise.all([sessionPlayback.loadSessions(), sessionPlayback.loadRecorderStatus(), tx.refresh(), refreshOnAirDelay(), hardware.fetch()]);
   // Explicit call instead of relying on the watch() above: showPreview can already be true the
   // moment this component mounts (e.g. Tidal Lock re-engaging after navigating back to this
   // page) — a plain watch() only fires on a *change*, so without this the preview would stay
@@ -528,6 +559,49 @@ function formatLastFrame(value?: string | null) {
           </option>
         </select>
       </label>
+
+      <!-- SDI output selection. Enumerated from the hardware, so only outputs that physically
+           exist are offered — a 2-output card never lists eight. -->
+      <label class="field-row field-wide" title="Which DELTACAST board carries the SDI output.">
+        <span>Transmit Board</span>
+        <select
+          v-model.number="txBoard"
+          class="compact-select auto-select"
+          :disabled="!hardware.inventoryAvailable"
+        >
+          <option v-for="board in hardware.txBoards" :key="board.boardIndex" :value="board.boardIndex">
+            {{ board.label }} — {{ board.txChannelCount }} TX
+          </option>
+          <option v-if="!hardware.txBoards.length" :value="txBoard">
+            {{ hardware.loading ? "Reading hardware…" : "No SDI boards detected" }}
+          </option>
+        </select>
+      </label>
+
+      <label class="field-row field-wide" title="Which SDI output to transmit from.">
+        <span>Transmit Channel</span>
+        <select
+          v-model.number="txChannel"
+          class="compact-select auto-select"
+          :disabled="!hardware.inventoryAvailable"
+        >
+          <option
+            v-for="channel in hardware.txChannels(txBoard)"
+            :key="channel.channelIndex"
+            :value="channel.channelIndex"
+          >
+            {{ hardware.channelLabel(txBoard, channel.channelIndex, "tx") }}
+          </option>
+          <option v-if="!hardware.txChannels(txBoard).length" :value="txChannel">
+            No SDI outputs on this board
+          </option>
+        </select>
+      </label>
+
+      <p v-if="txSelectionChanged" class="hardware-note">
+        Output staged — DeltacastCaptureService binds the TX channel at startup, so restart it to
+        transmit from TX{{ txChannel }} on board {{ txBoard }}.
+      </p>
     </div>
 
     <div class="actions">

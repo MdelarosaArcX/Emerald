@@ -1045,6 +1045,25 @@ function registerRoutes(server) {
     }
   });
 
+  // Installed SDI boards and their channels, for the Recording/Playback configuration pickers.
+  // Proxied straight through: DeltacastCaptureService owns the VideoMaster SDK and is the only
+  // thing that can enumerate the hardware.
+  server.get("/api/deltacast/boards", async (_request, reply) => {
+    try {
+      return await deltacastTx.boards();
+    } catch (error) {
+      // 200 with a reason rather than an error status: the pickers should degrade to "hardware
+      // unavailable" text, not break the whole configuration panel.
+      return reply.code(200).send({
+        detectedBoardCount: 0,
+        inventoryAvailable: false,
+        boards: [],
+        inUse: null,
+        message: `DeltacastCaptureService is not reachable: ${error.message}`,
+      });
+    }
+  });
+
   // --- Air EDL -----------------------------------------------------------------------------
   // Cutting material out of the transmission before it airs. The editing window is the broadcast
   // delay: writeTxPlaylist holds segments back until they are broadcastDelaySeconds old, and these

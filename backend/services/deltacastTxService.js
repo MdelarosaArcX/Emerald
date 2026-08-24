@@ -14,6 +14,13 @@ class DeltacastTxService {
     return this.request("GET", "/capture/status");
   }
 
+  // Installed SDI hardware and what each leg is currently using — backs the board/channel pickers
+  // in Recording and Playback configuration. Taken from the C# service's startup inventory, so it
+  // is cheap to poll and safe to call while capture and TX are live (see SdiChannelScanner).
+  async boards() {
+    return this.request("GET", "/boards");
+  }
+
   async start(sourceUrl, { live = false, loop = true } = {}) {
     return this.request("POST", "/tx/start", { sourceUrl, live, loop });
   }
