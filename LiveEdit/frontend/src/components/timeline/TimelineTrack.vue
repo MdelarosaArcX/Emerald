@@ -60,14 +60,23 @@ async function onDrop(event: DragEvent): Promise<void> {
     return;
   }
 
-  // A source that carries its own timecode is placed at that timecode rather than where the
-  // pointer happened to land. Emerald's clip export stamps one (a QuickTime tmcd track), which is
-  // what makes an exported file drop back onto the timeline at the position it was captured at —
-  // so a re-export can be conformed against the original without lining it up by hand.
+  // Where you dropped it is where it goes.
   //
-  // Awaited before inserting rather than inserting and moving afterwards: a clip that visibly
-  // jumps after landing looks like a bug, and the read is a cached ffprobe of a local file.
-  const timecodeFrame = await fetchSourceTimecodeFrame(data.url, timelineStore.fps);
+  // This used to place a source that carries its own timecode at that timecode instead — Emerald's
+  // clip export stamps one (a QuickTime tmcd track), so an exported file dropped back on the
+  // timeline landed at the position it was captured at, ready to be conformed against the
+  // original. The trouble is that it did so silently and unconditionally: drag a clip to 10:42 and
+  // it vanishes to wherever it was recorded, possibly hours away and off screen, with nothing to
+  // say why. A drop is a direct instruction about position and has to be honoured as one — the
+  // same reasoning importAndInsert() below already applies to desktop files.
+  //
+  // Conforming is still available deliberately, by holding Shift while dropping. Awaited before
+  // inserting rather than inserting and moving afterwards: a clip that visibly jumps after landing
+  // looks like a bug, and the read is a cached ffprobe of a local file.
+  const conformToSourceTimecode = event.shiftKey;
+  const timecodeFrame = conformToSourceTimecode
+    ? await fetchSourceTimecodeFrame(data.url, timelineStore.fps)
+    : null;
 
   timelineStore.addClipFromSource({
     name: data.name,

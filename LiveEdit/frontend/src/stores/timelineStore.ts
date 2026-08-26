@@ -354,19 +354,61 @@ export const useTimelineStore = defineStore('timeline', {
         const dayStartMs = startOfDayMs(segmentStartedAtMs);
         timecodeFrame = Math.round(((segmentStartedAtMs - dayStartMs) / 1000) * this.fps);
       }
-      // Clamp forward only — a genuine gap (dropped/delayed segment) still shows up as a gap, but
-      // clock imprecision can't land this a frame or two *before* the previous clip's end and
-      // overlap it. Real material does need this: consecutive segments routinely overlap by a
-      // second or two, because each one's duration slightly exceeds the interval between their
-      // birth times.
-      const previousClipEnd = track.clips.reduce((end, c) => Math.max(end, c.start + c.duration), 0);
-      const startFrame = Math.max(timecodeFrame, previousClipEnd);
+      // Place it at its own timecode, and resolve any overlap by shortening what is already there.
+      //
+      // This used to clamp forward instead — start = max(timecode, previousClipEnd) — which kept
+      // the track tidy at the cost of moving the clip off the very timecode it was placed by.
+      // Consecutive segments routinely overlap (each file's duration slightly exceeds the interval
+      // between their start timecodes), so an overlap pushed the next clip late — and because the
+      // push moved that clip's *end* forward too, the lag was handed to the clip after it and
+      // persisted for the rest of the session rather than correcting itself. It only grows where
+      // durations keep outrunning the spacing; usually one early overlap sets it and the rest carry
+      // it. Measured on real sessions: a steady 3.9s on one, 4.7s on another. The ruler and the
+      // playhead readout stayed correct the whole time while the picture under them sat seconds
+      // late — which is precisely how this timeline came to disagree with Emerald's playback deck,
+      // which resolves a timecode straight against the segments' own startTimecodes and never
+      // shifts them.
+      //
+      // The overlapping tail is not lost material: the next segment's opening frames are the same
+      // instants recorded twice, so ending the previous clip where this one begins cuts between two
+      // copies of the same content rather than dropping any of it.
+      let startFrame = Math.max(0, timecodeFrame);
+      let durationFrames = Math.round(payload.durationSeconds * this.fps);
+
+      /** The clip already on this track that this one lands inside of or after. */
+      const previous = track.clips.reduce<Clip | null>(
+        (latest, c) => (c.start <= startFrame && (!latest || c.start > latest.start) ? c : latest),
+        null,
+      );
+
+      if (previous) {
+        if (startFrame <= previous.start) {
+          // Out of order, which means a missing or untrustworthy timecode. Appending keeps the
+          // track ordered and playable, which matters more than honouring a value we doubt.
+          startFrame = previous.start + previous.duration;
+        } else if (previous.start + previous.duration > startFrame) {
+          const shortened = startFrame - previous.start;
+          previous.duration = shortened;
+          previous.trimOut = previous.trimIn + shortened;
+        }
+      }
+
+      // Backfill does not always arrive in order, so this can also land *before* something already
+      // placed — trim its tail rather than let two clips cover the same frames.
+      const next = track.clips.reduce<Clip | null>(
+        (earliest, c) => (c.start > startFrame && (!earliest || c.start < earliest.start) ? c : earliest),
+        null,
+      );
+
+      if (next && startFrame + durationFrames > next.start) {
+        durationFrames = next.start - startFrame;
+      }
 
       this.addClipFromSource({
         name: payload.name,
         url: payload.url,
         thumbnail: payload.thumbnail,
-        durationFrames: Math.round(payload.durationSeconds * this.fps),
+        durationFrames,
         trackId: track.id,
         startFrame,
         hasAudio: payload.hasAudio,
