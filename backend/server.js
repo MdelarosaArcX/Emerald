@@ -21,6 +21,8 @@ const { WebrtcPreviewService, stopSharedMediaMtx } = require("./services/webrtcP
 const {
   addCut: addAirCut,
   removeCut: removeAirCut,
+  addInsert: addAirInsert,
+  removeInsert: removeAirInsert,
   describeEdl: describeAirEdl,
   loadEdl: loadAirEdl,
 } = require("./services/airEdlService");
@@ -51,36 +53,93 @@ const SEGMENT_PROBE_CONCURRENCY = 8;
  * time than their count suggests. Each cut the position has passed is added back — iteratively,
  * since restoring one cut's duration can carry the position over the next.
  */
-function onAirContentTime({ recordingStartedAtMs, sessionDir, framesSent, fps }) {
-  if (!Number.isFinite(recordingStartedAtMs) || !(framesSent > 0) || !(fps > 0)) return null;
+/**
+ * The content instant a transmission opens at, read from the playlist as it stands right now.
+ *
+ * "beginning" opens on the first segment the playlist still lists — not necessarily segment 0, since
+ * the storage quota can trim the earliest ones out from under a long session, which is why the
+ * MEDIA-SEQUENCE is read rather than assumed.
+ *
+ * "delay" is a resume, joining Transmit:HlsStartRunwaySegments back from the newest listed segment.
+ * The runway is the capture service's setting and not visible here; three segments is its default
+ * and the figure its own documentation quotes, so a resume anchored this way is right to within a
+ * segment rather than wrong by the length of the playlist, which is what assuming index 0 gave.
+ *
+ * Null when the playlist cannot be read, which leaves onAirContentTime on its configured-hold
+ * fallback.
+ */
+function playlistJoinContentMs(sessionDir, startAt, recordingStartedAtMs) {
+  if (!Number.isFinite(recordingStartedAtMs)) return null;
 
-  let firstSegmentIndex;
   try {
     const playlist = fs.readFileSync(path.join(sessionDir, TX_LIVE_PLAYLIST_NAME), "utf8");
     const match = /^#EXT-X-MEDIA-SEQUENCE:(\d+)/m.exec(playlist);
     if (!match) return null;
-    firstSegmentIndex = Number(match[1]);
+
+    const firstIndex = Number(match[1]);
+    const listedSegments = (playlist.match(/^#EXTINF:/gm) || []).length;
+    const segmentMs = TX_HLS_SEGMENT_SECONDS * 1000;
+
+    if (startAt === "beginning") return recordingStartedAtMs + firstIndex * segmentMs;
+
+    const HLS_RESUME_RUNWAY_SEGMENTS = 3;
+    const joinIndex = Math.max(firstIndex, firstIndex + listedSegments - HLS_RESUME_RUNWAY_SEGMENTS);
+    return recordingStartedAtMs + joinIndex * segmentMs;
   } catch {
     return null;
   }
+}
 
-  const playlistStartMs = recordingStartedAtMs + firstSegmentIndex * TX_HLS_SEGMENT_SECONDS * 1000;
-  const playedMs = (framesSent / fps) * 1000;
+function onAirContentTime({ recordingStartedAtMs, sessionDir, segmentSeconds, broadcastDelaySeconds, anchor, nowMs = Date.now() }) {
+  if (!Number.isFinite(recordingStartedAtMs)) return null;
 
-  let positionMs = playlistStartMs + playedMs;
+  // Where air is, as wall-clock arithmetic rather than a frame count.
+  //
+  // This used to derive the position from TX's framesSent against the playlist. That reading is
+  // only as steady as the counter behind it, and the counter is not steady: a decode restart, a
+  // stalled read, or — since clips could be booked into the transmission — frames of inserted
+  // material that are not live content at all, all move it out of step with the wall clock. The
+  // position was recomputed on every poll, so each of those became a jump, and because the readout
+  // ticks forward locally between polls, a jump backwards showed on screen as the timecode
+  // stopping and restarting.
+  //
+  // Air advances at exactly 1x, so once the instant it opened at is known the position needs no
+  // measurement at all. `anchor` records that instant when the transmission starts; without one
+  // (a backend restarted mid-transmission) the hold TX waited out before opening is the same
+  // figure by construction — a session opened at its first completed segment trails capture by
+  // exactly one segment plus one broadcast delay, and keeps trailing by it.
+  const holdMs = ((segmentSeconds || 0) + (broadcastDelaySeconds || 0)) * 1000;
+  const baseMs = anchor
+    ? anchor.contentAtMs + (nowMs - anchor.startedAtMs)
+    : nowMs - holdMs;
+
+  if (!Number.isFinite(baseMs)) return null;
+
+  // Edits air has already played through move it off that line, in opposite directions: a cut
+  // removed content, so air reached what follows sooner; an inserted clip added playlist time that
+  // is not content, so air reached what follows later. An overlay does neither — it replaces an
+  // equal span, which is why only "insert" counts here.
+  //
+  // Fixed point, because crediting one edit can carry the position past another.
+  let positionMs = baseMs;
   try {
-    const { cuts } = loadAirEdl(sessionDir);
-    // Fixed point: adding a passed cut's duration can move the position past a later one.
-    for (let pass = 0; pass < cuts.length; pass += 1) {
-      const restored = cuts
+    const { cuts, inserts } = loadAirEdl(sessionDir);
+    const added = inserts.filter((entry) => entry.mode === "insert");
+
+    for (let pass = 0; pass < 8; pass += 1) {
+      const cutMs = cuts
         .filter((cut) => cut.startMs < positionMs)
         .reduce((sum, cut) => sum + Math.min(cut.endMs - cut.startMs, Math.max(0, positionMs - cut.startMs)), 0);
-      const next = playlistStartMs + playedMs + restored;
+      const insertMs = added
+        .filter((entry) => entry.atMs < positionMs)
+        .reduce((sum, entry) => sum + Math.min(entry.durationMs, Math.max(0, positionMs - entry.atMs)), 0);
+
+      const next = baseMs + cutMs - insertMs;
       if (Math.abs(next - positionMs) < 1) break;
       positionMs = next;
     }
   } catch {
-    // No EDL, or an unreadable one — the uncut position is still the right answer.
+    // No EDL, or an unreadable one — the unedited position is still the right answer.
   }
 
   return positionMs;
@@ -134,6 +193,19 @@ rtmpIngest.start();
 // resetting to 0 each time recording starts and freezing at 0 (not counting) while stopped.
 let sessionFrameBaseline = null;
 
+/**
+ * The instant the current transmission opened, and the content instant it opened *at*.
+ *
+ * Air runs at 1x, so these two together fix its position for the whole transmission without
+ * measuring anything — see onAirContentTime. Recorded when TX starts because that is the only
+ * moment the join point is known: a session opened for the first time starts at its first listed
+ * segment, a resumed one joins near the live edge, and nothing afterwards can tell the two apart.
+ *
+ * Null when nothing is airing this session's live playlist, including after a backend restart —
+ * onAirContentTime falls back to the configured hold, which is the same figure for the common case.
+ */
+let onAirAnchor = null;
+
 // DeltacastCaptureService's TX decode process publishes its own low-latency WebRTC preview
 // directly to MediaMTX via RTSP (see DeltacastTxService.cs's PreviewRelayUrl) — mirroring the
 // exact same decoded frames it feeds to the SDI board, so this preview can't drift from the
@@ -144,6 +216,36 @@ let sessionFrameBaseline = null;
 // (unlike webrtcPreview above) since TX's own process publishes/unpublishes on its own as it
 // starts/stops — this is just the static WHEP URL for it.
 const onAirPreviewWhepUrl = `http://${process.env.MEDIAMTX_PUBLIC_HOST || "127.0.0.1"}:${Number(process.env.MEDIAMTX_WHEP_PORT || 8889)}/live/onair/whep`;
+
+/**
+ * The same on-air feed, addressed the ways a general-purpose player can open it.
+ *
+ * WHEP above is a browser protocol — VLC, a hardware decoder or a downstream station cannot use
+ * it. MediaMTX already serves the identical `live/onair` path over RTSP, HLS and SRT (all enabled
+ * in MediaMtx/mediamtx.yml), so this exposes those addresses rather than publishing anything new:
+ * it is the same single publisher, read by a different protocol.
+ *
+ * Built from MEDIAMTX_PUBLIC_HOST for the same reason the WHEP URL is — these are absolute
+ * addresses dialled from another machine on the LAN, so 0.0.0.0 or 127.0.0.1 would only ever work
+ * on the broadcast machine itself.
+ *
+ * Nothing is published to the path while TX is idle, so a player pointed here off air will simply
+ * fail to connect. That is the honest behaviour; the panel says as much rather than handing over a
+ * URL that looks broken.
+ */
+const mediaMtxHost = process.env.MEDIAMTX_PUBLIC_HOST || "127.0.0.1";
+const onAirStreamUrls = {
+  // Lowest latency of the three and what VLC opens most reliably — the default offered.
+  rtsp: `rtsp://${mediaMtxHost}:${Number(process.env.MEDIAMTX_RTSP_PORT || 8554)}/live/onair`,
+  // Plain HTTP, so it survives a firewall that only allows web traffic — but NOT currently
+  // reachable on this machine: Timecode.Master binds :8888 on the LAN address specifically
+  // (EMERALD_TIMECODE_MASTER_URL) and Windows routes the more specific binding first, so this
+  // address reaches the generator and 404s. Built anyway; the UI offers it again once
+  // MEDIAMTX_HLS_PORT moves it off 8888.
+  hls: `http://${mediaMtxHost}:${Number(process.env.MEDIAMTX_HLS_PORT || 8888)}/live/onair/index.m3u8`,
+  // For a downstream contribution link rather than local monitoring.
+  srt: `srt://${mediaMtxHost}:${Number(process.env.MEDIAMTX_SRT_PORT || 8890)}?streamid=read:live/onair`,
+};
 
 // The single source of timecode for the whole backend. Measures this machine's clock offset
 // against the Timecode System generator every couple of seconds, after which every timecode read
@@ -488,24 +590,44 @@ function registerRoutes(server) {
     // be asking is the one reconcileSegments stored here (see its timecodeAtLocalInstant call).
     // birthtime, which this endpoint also returns, is this machine's raw clock and drifts from it.
     const sessionRecord = await db.getSessionWithSegments(folder).catch(() => null);
-    const startTimecodeFor = (fileName) => {
+    const recordFor = (fileName) => {
       const movName = fileName.replace(/\.(mp4|ts)$/i, ".mov");
-      const row = sessionRecord?.segments?.find((segment) => segment.movFileName === movName);
-      return row?.startTimecode ?? null;
+      return sessionRecord?.segments?.find((segment) => segment.movFileName === movName) ?? null;
     };
 
     const segments = await mapWithConcurrency(matches, SEGMENT_PROBE_CONCURRENCY, async ({ fileName, kind }) => {
       const filePath = path.join(sessionDir, fileName);
       const stat = await fs.promises.stat(filePath);
 
-      // Probed directly off the actual file rather than trusting obsIngestService's ffmpeg
-      // command line (audio embedding there is optional, "0:a:0?") or the DB's segment records
-      // (segmentIndex there is a global counter that doesn't line up with these per-folder
-      // 000-based file names). Skipped for .ts — nothing consumes their duration yet, and
-      // probing dozens of them per request would slow this endpoint down for no benefit. The
-      // still-recording last .mp4 segment can fail to probe (ffmpeg hasn't finalized it yet);
-      // that's fine, it just falls back to null and the frontend uses a placeholder duration.
-      const probed = kind === "mp4" ? await probeSegment(filePath).catch(() => null) : null;
+      // Duration comes from the segment's own database record when it has one, and only from a
+      // fresh probe when it does not.
+      //
+      // This used to probe every mp4 on every request. The Playback deck polls this endpoint every
+      // five seconds and LiveEdit polls it too, so a session accumulated one ffprobe process per
+      // segment per poll — twelve spawns every five seconds on a young session, and growing for as
+      // long as the recording ran, all on the machine that is simultaneously capturing and
+      // transmitting. Measured at 121ms of process churn per call for twelve segments.
+      //
+      // A finished segment's duration never changes, so re-measuring it is pure waste; persisting
+      // what is measured means the cost falls to zero as the session fills in. Only the
+      // still-recording tail is probed repeatedly, and that one genuinely can change.
+      const record = recordFor(fileName);
+      let probed = null;
+
+      if (kind === "mp4" && record?.durationSeconds == null) {
+        // The still-recording last segment can fail to probe (ffmpeg has not finalized it yet);
+        // that is fine, it falls back to null and the frontend uses a placeholder duration.
+        probed = await probeSegment(filePath).catch(() => null);
+
+        // Write it back so no later request pays for this again. Fire and forget: a listing must
+        // not fail because the database was busy.
+        if (probed?.durationSeconds && record?.id) {
+          db.updateSegmentProbe(record.id, probed)
+            .catch((error) => app.log.error(error, "Failed to persist segment probe"));
+        }
+      }
+
+      const durationSeconds = record?.durationSeconds ?? probed?.durationSeconds ?? null;
 
       return {
         fileName,
@@ -520,10 +642,10 @@ function registerRoutes(server) {
         // position it by. Null for segments recorded before per-segment timecodes were stored, and
         // for .ts (the TX legs are never reconciled into the segment table); callers fall back to
         // createdAt for those.
-        startTimecode: startTimecodeFor(fileName),
+        startTimecode: record?.startTimecode ?? null,
         frameRate: sessionRecord?.frameRate ?? null,
-        durationSeconds: probed?.durationSeconds ?? null,
-        hasAudio: kind === "mp4" ? Boolean(probed?.audioCodec) : null,
+        durationSeconds,
+        hasAudio: kind === "mp4" ? Boolean(record?.audioCodec ?? probed?.audioCodec) : null,
       };
     });
 
@@ -682,9 +804,33 @@ function registerRoutes(server) {
 
   server.post("/api/webrtc-preview/stop", async () => webrtcPreview.stop());
 
-  // Static — nothing to start/stop from here, see the comment where onAirPreviewWhepUrl is
-  // declared. Whether anything is actually publishing to it depends entirely on tx.isTransmitting.
-  server.get("/api/onair-preview/status", async () => ({ whepUrl: onAirPreviewWhepUrl }));
+  // The WHEP URL itself is static — see the comment where onAirPreviewWhepUrl is declared. What
+  // is publishing to it is not: `leg` says which SDI input DeltacastCaptureService's confidence
+  // monitor is currently on and whether it has actually locked signal, so the Playback panel can
+  // tell "pointed at RX4" from "receiving RX4". Null when that service is unreachable — the URL
+  // still answers, because the page has to render either way.
+  server.get("/api/onair-preview/status", async () => ({
+    whepUrl: onAirPreviewWhepUrl,
+    // The same feed for players that cannot speak WHEP — see onAirStreamUrls.
+    streamUrls: onAirStreamUrls,
+    leg: await deltacastTx.onAirPreviewStatus().catch(() => null),
+  }));
+
+  // Moves the confidence monitor to a different SDI input while everything is running. Previously
+  // this was OnAirPreview:ChannelIndex in the capture service's appsettings.json, which only took
+  // effect on a restart — not something anyone can do mid-transmission.
+  server.post("/api/onair-preview/channel", async (request, reply) => {
+    const { enabled, boardIndex, channelIndex } = request.body || {};
+
+    try {
+      const result = await deltacastTx.setOnAirPreviewChannel({ enabled, boardIndex, channelIndex });
+      logEvent(`On-air preview input set — board=${boardIndex}, channel=RX${channelIndex}, enabled=${enabled !== false}`, "info", "TX");
+      return result;
+    } catch (error) {
+      logEvent(`On-air preview input change failed — ${error.message}`, "warn", "TX");
+      return reply.code(502).send({ message: error.message });
+    }
+  });
 
   server.post("/api/obs-stream/probe", async (request) => probeObsStream(request.body || {}));
 
@@ -810,22 +956,24 @@ function registerRoutes(server) {
     // Where air actually is, measured rather than assumed.
     //
     // This used to be `now - broadcastDelaySeconds`, which only held while TX happened to open the
-    // playlist near its live edge. It no longer does: TX starts at the first listed segment (see
-    // TransmitOptions.StartAtFirstSegment), so a session pushed on air an hour in is an hour behind
-    // live, not `broadcastDelaySeconds` behind. The assumed value put LiveEdit's on-air marker near
-    // the live edge while the transmission was actually playing material from much earlier — and
-    // everything downstream of that marker (the freeze countdown, the air-EDL runway, which
-    // material is still safe to cut) inherited the error.
+    // playlist near its live edge. A session opened at its first completed segment (see
+    // /api/tx/start's startAt) is however old the recording already was behind live, not
+    // `broadcastDelaySeconds` behind. The assumed value put LiveEdit's on-air marker near the live
+    // edge while the transmission was actually playing material from much earlier — and everything
+    // downstream of that marker (the freeze countdown, the air-EDL runway, which material is still
+    // safe to cut) inherited the error.
     //
-    // TX's own frame counter is the ground truth: every frame it has sent is one frame of playlist
-    // content consumed, so the capture instant on air is the first listed segment's start plus that
-    // many frames.
+    // It is now fixed by where the transmission opened rather than measured from TX's frame
+    // counter, which both removes the jitter that made this readout stall on screen and closes the
+    // resume case the frame count could not express. See onAirContentTime and onAirAnchor.
     const onAirContentMs = isOnAirFromCurrentSessionLiveDelay
       ? onAirContentTime({
           recordingStartedAtMs: Date.parse(recordingStatus.startedAt),
           sessionDir: path.join(recordingsPath, obsIngest.sessionFolderName),
-          framesSent: txStatus?.framesSent ?? 0,
-          fps,
+          segmentSeconds: recordingStatus.segmentSeconds,
+          broadcastDelaySeconds,
+          anchor: onAirAnchor?.folder === obsIngest.sessionFolderName ? onAirAnchor : null,
+          nowMs: now.getTime(),
         })
       : null;
 
@@ -967,13 +1115,59 @@ function registerRoutes(server) {
     if (isLive) {
       const txPlaylistPath = path.join(sessionDir, TX_LIVE_PLAYLIST_NAME);
 
+      // Hold air until the on-air countdown the Playback deck displays has actually elapsed.
+      //
+      // The playlist existing is NOT the same thing, and that is what this used to check. The
+      // live TX leg is cut into 4-second .ts segments (TX_HLS_SEGMENT_SECONDS) rather than
+      // 2-minute archival ones, so emerald-tx-live.m3u8 appears roughly one broadcast delay in —
+      // around 68s at the defaults — while the deck is still counting down to segmentSeconds +
+      // broadcastDelaySeconds, i.e. 180s. Anything that started air in that window (the manual
+      // "Push On Air (Live)" button, which Tidal Lock's own client-side hold does not cover) put
+      // the transmission out roughly two minutes before the operator was told it would go.
+      //
+      // Enforced here rather than only in the frontend because this is the point where air
+      // actually starts: the button, an old browser tab and a direct API call all pass through it.
+      const startedAtMs = Date.parse(obsIngest.recordingStatus.startedAt);
+      const holdSeconds = (obsIngest.recordingStatus.segmentSeconds || 0)
+        + (obsIngest.recordingStatus.broadcastDelaySeconds || 0);
+      const readyAtMs = startedAtMs + holdSeconds * 1000;
+
+      // An unparseable start time means the hold cannot be computed — don't let that block air.
+      if (Number.isFinite(startedAtMs) && Date.now() < readyAtMs) {
+        const remainingSeconds = Math.ceil((readyAtMs - Date.now()) / 1000);
+        logEvent(`On-air start rejected — ${remainingSeconds}s left of the ${holdSeconds}s on-air hold for '${folder}'`, "warn", "TX");
+        return reply.code(409).send({
+          message: `Not airable yet — ${remainingSeconds}s left of the ${holdSeconds}s hold (${obsIngest.recordingStatus.segmentSeconds}s segment + ${obsIngest.recordingStatus.broadcastDelaySeconds}s broadcast delay).`,
+        });
+      }
+
       if (!fs.existsSync(txPlaylistPath)) {
         return reply.code(400).send({ message: "TX playlist isn't ready yet — wait for the first segment to finish and try again." });
       }
 
+      // Where this push joins the playlist.
+      //
+      // The first time a session goes to air, the transmission opens on the first completed
+      // segment — what the operator has just spent the whole hold waiting for is that segment, so
+      // that is what air starts with. (This also makes onAirContentTime's arithmetic true: it
+      // derives the on-air position from the first listed segment plus frames sent, which only
+      // holds when TX actually started there.)
+      //
+      // A later push of the same session is a *resume*, not a fresh open, and must not replay
+      // material that has already gone out — so it rejoins near the playlist's edge, which is the
+      // broadcast-delay point by construction. Decided from the on-air event log rather than from
+      // TX's own state, which is cleared by a stop and by a service restart.
+      const hasAired = await db.hasAiredSession(folder).catch(() => false);
+      const startAt = hasAired ? "delay" : "beginning";
+
       try {
-        const status = await deltacastTx.start(txPlaylistPath, { live: true });
-        logEvent(`On-air started — live folder=${folder}`, "info", "TX");
+        const status = await deltacastTx.start(txPlaylistPath, { live: true, startAt });
+        onAirAnchor = {
+          folder,
+          startedAtMs: Date.now(),
+          contentAtMs: playlistJoinContentMs(sessionDir, startAt, Date.parse(obsIngest.recordingStatus.startedAt)),
+        };
+        logEvent(`On-air started — live folder=${folder}, joining at ${startAt === "beginning" ? "the first completed segment" : "the delay point (resume)"}`, "info", "TX");
         if (!wasAlreadyTransmitting) {
           db.recordOnAirStart({
             startedAt: new Date(),
@@ -1031,6 +1225,7 @@ function registerRoutes(server) {
   server.post("/api/tx/stop", async (_request, reply) => {
     try {
       const status = await deltacastTx.stop();
+      onAirAnchor = null;
       logEvent("On-air stopped", "info", "TX");
       db.recordOnAirStop({
         stoppedAt: new Date(),
@@ -1070,6 +1265,66 @@ function registerRoutes(server) {
   // routes decide what of that held-back material actually makes it into the playlist TX plays.
   // See services/airEdlService.js for the ripple model and the safety rules.
 
+  /**
+   * Where air actually is, derived exactly as /api/capture/timecode derives it — the same number
+   * LiveEdit draws its on-air marker at. Anything else means a panel showing an edit as safe while
+   * these routes refuse it, which is precisely what used to happen.
+   *
+   * -Infinity when TX is not playing this session's live playlist: nothing of this recording has
+   * gone out, so no part of it is too close to air. undefined when the position cannot be derived
+   * at all, which leaves the EDL guards on their own pessimistic estimate rather than an invented
+   * figure.
+   */
+  const measuredAirPointMs = async (session) => {
+    const txStatus = await deltacastTx.status().catch(() => null);
+    const isAiringThisSession = Boolean(
+      txStatus?.isTransmitting
+      && typeof txStatus?.sourceUrl === "string"
+      && txStatus.sourceUrl.includes(session.folder)
+      && txStatus.sourceUrl.endsWith(TX_LIVE_PLAYLIST_NAME),
+    );
+
+    if (!isAiringThisSession) return Number.NEGATIVE_INFINITY;
+
+    const contentMs = onAirContentTime({
+      recordingStartedAtMs: session.startedAtMs,
+      sessionDir: session.sessionDir,
+      segmentSeconds: session.segmentSeconds,
+      broadcastDelaySeconds: session.broadcastDelaySeconds,
+      anchor: onAirAnchor?.folder === session.folder ? onAirAnchor : null,
+    });
+
+    return contentMs === null ? undefined : contentMs;
+  };
+
+  /**
+   * Turns a browser-facing media URL into a path on disk, or null if it does not name one.
+   *
+   * The result is handed to ffmpeg on the machine that is transmitting, so this is a containment
+   * check rather than a convenience: only the recordings and exports roots are reachable, and only
+   * through the prefixes the static handlers already serve them under.
+   */
+  const resolveMediaPath = (sourceUrl) => {
+    if (typeof sourceUrl !== "string" || !sourceUrl) return null;
+
+    const roots = [
+      { prefix: "/recordings/", root: recordingsPath },
+      { prefix: "/exports/", root: exportsPath },
+      { prefix: "/edit-captures/", root: editCapturePath },
+    ];
+
+    for (const { prefix, root } of roots) {
+      if (!sourceUrl.startsWith(prefix)) continue;
+
+      const relative = decodeURIComponent(sourceUrl.slice(prefix.length)).split("?")[0];
+      const resolved = path.resolve(root, relative);
+      if (!isInsideDirectory(root, resolved) || !fs.existsSync(resolved)) return null;
+      return resolved;
+    }
+
+    return null;
+  };
+
   /** The session currently being recorded, which is the only one whose air can still be changed. */
   const activeAirSession = () => {
     if (!obsIngest.recordingStatus.isRecording || !obsIngest.sessionFolderName) return null;
@@ -1080,6 +1335,8 @@ function registerRoutes(server) {
       folder: obsIngest.sessionFolderName,
       startedAtMs,
       broadcastDelaySeconds: obsIngest.broadcastDelaySeconds || 0,
+      // The other half of the hold — see onAirContentTime's fallback.
+      segmentSeconds: obsIngest.recordingStatus.segmentSeconds || 0,
     };
   };
 
@@ -1111,11 +1368,15 @@ function registerRoutes(server) {
     }
 
     const { startMs, endMs } = request.body || {};
+
+    const airPointMs = await measuredAirPointMs(session);
+
     const result = addAirCut(session.sessionDir, {
       startMs: Number(startMs),
       endMs: Number(endMs),
       recordingStartedAtMs: session.startedAtMs,
       broadcastDelaySeconds: session.broadcastDelaySeconds,
+      airPointMs,
     });
 
     if (!result.ok) {
@@ -1131,11 +1392,78 @@ function registerRoutes(server) {
     const seconds = ((Number(endMs) - Number(startMs)) / 1000).toFixed(1);
     logEvent(
       `Cut ${seconds}s from air — ${result.remainingDelaySeconds.toFixed(1)}s of delay left`,
-      "warning",
+      "warn",
       "AirEdit",
     );
 
     return { ...result.edl, remainingDelaySeconds: result.remainingDelaySeconds };
+  });
+
+  /**
+   * Books a clip into the transmission at a timecode — the Playback panel's Clip Insert / Clip
+   * Overlay. The source must resolve inside the media roots: this path ends up as an ffmpeg input
+   * on the machine that is transmitting, so an unchecked one would read anything on disk.
+   */
+  server.post("/api/air-insert", async (request, reply) => {
+    const session = activeAirSession();
+    if (!session) {
+      return reply.code(409).send({ message: "Nothing is recording, so there is no pre-air window to place a clip in." });
+    }
+
+    const { mode, atMs, sourceUrl } = request.body || {};
+    const sourcePath = resolveMediaPath(sourceUrl);
+    if (!sourcePath) {
+      return reply.code(400).send({ message: "That clip could not be found in the recordings or exports folders." });
+    }
+
+    // Read off the file rather than trusted from the client: the booked duration decides how much
+    // live material an overlay hides, and a wrong one would either cut the programme short or leave
+    // the clip running over it.
+    const probed = await probeSegment(sourcePath).catch(() => null);
+    if (!probed?.durationSeconds) {
+      return reply.code(400).send({ message: "Could not read how long that clip runs." });
+    }
+
+    const result = addAirInsert(session.sessionDir, {
+      mode,
+      atMs: Number(atMs),
+      sourcePath,
+      durationMs: probed.durationSeconds * 1000,
+      recordingStartedAtMs: session.startedAtMs,
+      broadcastDelaySeconds: session.broadcastDelaySeconds,
+      airPointMs: await measuredAirPointMs(session),
+    });
+
+    if (!result.ok) return reply.code(409).send({ message: result.error });
+
+    // Built and spliced on this rewrite rather than the next tick, so the operator sees the booking
+    // take hold — and so a transcode failure surfaces now, while there is still time to act on it.
+    await obsIngest.updateLiveTxPlaylist();
+
+    logEvent(
+      `Clip ${mode === "overlay" ? "overlaid on" : "inserted into"} air — ${result.insert.name} at ${timecodeMaster.timecodeAt(new Date(result.insert.atMs))} (${probed.durationSeconds.toFixed(1)}s)`,
+      "warn",
+      "AirEdit",
+    );
+
+    return result.edl;
+  });
+
+  server.delete("/api/air-insert/:id", async (request, reply) => {
+    const session = activeAirSession();
+    if (!session) {
+      return reply.code(409).send({ message: "Nothing is recording." });
+    }
+
+    const result = removeAirInsert(session.sessionDir, request.params.id, {
+      broadcastDelaySeconds: session.broadcastDelaySeconds,
+      airPointMs: await measuredAirPointMs(session),
+    });
+    if (!result.ok) return reply.code(409).send({ message: result.error });
+
+    await obsIngest.updateLiveTxPlaylist();
+    logEvent(`Pulled a booked clip from air — ${request.params.id}`, "info", "AirEdit");
+    return result.edl;
   });
 
   server.delete("/api/air-edl/cut/:id", async (request, reply) => {

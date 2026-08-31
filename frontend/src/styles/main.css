@@ -1655,3 +1655,125 @@ button.crumb:hover {
 .hardware-note.warn {
   color: rgba(255, 154, 118, 0.85);
 }
+
+/* --- Clip Insert -------------------------------------------------------------------------------
+   Booking a clip into the live transmission from the Playback deck. Sits under the on-air queue,
+   so it borrows the card's existing field/action styles and only adds what the booking list needs. */
+.clip-insert {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(79, 103, 158, 0.25);
+}
+
+.clip-insert-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.clip-insert-head h3 {
+  margin: 0;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(185, 194, 219, 0.72);
+}
+
+/* Says why the controls are inert, rather than leaving them dead with no explanation. */
+.clip-insert-idle {
+  margin-left: auto;
+  font-size: 0.68rem;
+  color: rgba(255, 154, 118, 0.8);
+}
+
+.booked-clips h4 {
+  margin: 0 0 4px;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(185, 194, 219, 0.55);
+}
+
+.booked-clip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 0.72rem;
+  border-top: 1px solid rgba(79, 103, 158, 0.15);
+}
+
+.booked-tc {
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  color: #35f0b1;
+}
+
+.booked-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(229, 234, 245, 0.85);
+}
+
+.booked-mode {
+  color: rgba(185, 194, 219, 0.55);
+}
+
+.booked-clip button {
+  padding: 0 8px;
+  min-height: 18px;
+  height: 18px;
+  font-size: 0.68rem;
+}
+
+/* Generator timecode shown beside the on-air one in the Playback deck's badge. Deliberately
+   secondary: the large reading is where the transmission has reached, which is what labels the
+   picture; this is the reference clock it is measured against. */
+.timecode-gen {
+  margin-left: 10px;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  opacity: 0.82;
+}
+
+/* A timecode that is not the generator's is a condition worth noticing, not a neutral fact. */
+.stats dd.tc-warn {
+  color: #ffb454;
+}
+
+/* --- Stream URL -------------------------------------------------------------------------------
+   Protocol picker, the address itself, and a copy button on one row of the Playback config grid.
+   The address takes the slack so a long SRT query string stays readable. */
+.stream-url {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stream-url-protocol {
+  flex: 0 0 auto;
+  width: 5.5em;
+}
+
+.stream-url-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 0.72rem;
+  color: #35f0b1;
+  cursor: text;
+}
+
+.stream-url-copy {
+  flex: 0 0 auto;
+  min-height: 20px;
+  height: 20px;
+  padding: 0 10px;
+  font-size: 0.7rem;
+}

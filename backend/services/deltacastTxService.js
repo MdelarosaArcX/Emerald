@@ -21,8 +21,27 @@ class DeltacastTxService {
     return this.request("GET", "/boards");
   }
 
-  async start(sourceUrl, { live = false, loop = true } = {}) {
-    return this.request("POST", "/tx/start", { sourceUrl, live, loop });
+  // The on-air confidence monitor's own leg: which SDI input it is watching, and whether it is
+  // locked onto it. Separate from boards() because it changes on its own (signal coming and going)
+  // rather than only when an operator picks something.
+  async onAirPreviewStatus() {
+    return this.request("GET", "/onair-preview/status");
+  }
+
+  // Re-points that leg at a different input while the service runs. The C# side drops its current
+  // RX stream and comes back on the new one within a few seconds — see OnAirPreviewService's
+  // TryRebind for why this is accept-then-apply rather than synchronous, and why it refuses a
+  // board that was not opened at startup.
+  async setOnAirPreviewChannel({ enabled, boardIndex, channelIndex } = {}) {
+    return this.request("POST", "/onair-preview/channel", { enabled, boardIndex, channelIndex });
+  }
+
+  // `startAt` ("beginning" | "delay") decides where a live HLS playlist is joined, overriding the
+  // service's configured Transmit:HlsStartMode for this push only — see server.js's /api/tx/start
+  // for why opening a session differs from resuming one. Omitted for non-playlist sources, which
+  // have no history to join.
+  async start(sourceUrl, { live = false, loop = true, startAt } = {}) {
+    return this.request("POST", "/tx/start", { sourceUrl, live, loop, startAt });
   }
 
   async stop() {

@@ -279,6 +279,18 @@ async function recordOnAirStop({ stoppedAt, framesSent, framesDropped, lastMessa
   return onAirEvents.save(open);
 }
 
+/**
+ * Whether this session has ever been to air before. Decides where a live transmission joins its
+ * playlist: the first push of a session opens at the first completed segment, a later one rejoins
+ * near the delay point instead of replaying material that has already gone out.
+ */
+async function hasAiredSession(sourceFolder) {
+  if (!sourceFolder) return false;
+  const { onAirEvents } = await getRepositories();
+  const count = await onAirEvents.count({ where: { sourceFolder } });
+  return count > 0;
+}
+
 async function listRecentOnAirEvents(limit = 50) {
   const { onAirEvents } = await getRepositories();
   return onAirEvents.find({
@@ -324,5 +336,6 @@ module.exports = {
   getUnprobedEditCaptureSegmentIds,
   recordOnAirStart,
   recordOnAirStop,
+  hasAiredSession,
   listRecentOnAirEvents,
 };

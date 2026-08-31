@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeFfmpegPath } = require("./obsRecordingService");
-const { applyEdlToSegments, loadEdl, pruneUnreferencedTrims } = require("./airEdlService");
+const { applyEdlToSegments, loadEdl, overlayCoveredRanges, pruneUnreferencedTrims, LIVE_GROUP } = require("./airEdlService");
 const { isUdpInputUrl, normalizeInputUrl } = require("./ffmpegInputUrl");
 const { parseSizeLimit, getDirectorySize, enforceFolderQuota, trimActiveSessionSegments } = require("./storageQuotaService");
 const { logEvent } = require("./eventLogService");
@@ -767,20 +767,46 @@ async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited, delaySe
   //
   // Falls back to the uncut segment list on any failure — an EDL problem must never be able to
   // empty the playlist, because an empty playlist is dead air.
-  let entries = eligibleSegments.map((segment) => ({ fileName: segment.fileName, durationSeconds: targetDuration }));
-  const { cuts } = loadEdl(sessionDir);
+  let entries = eligibleSegments.map((segment) => ({
+    fileName: segment.fileName,
+    durationSeconds: targetDuration,
+    // Carried even on the no-edits path: without it every consecutive pair reads as a timeline
+    // break and the playlist is peppered with discontinuities, which stutters an ordinary
+    // transmission that has no edits in it at all.
+    group: LIVE_GROUP,
+    seq: segment.index,
+  }));
+  const edl = loadEdl(sessionDir);
+  const { cuts, inserts } = edl;
+  // An overlay hides the live material underneath it, which the playlist expresses as a cut with
+  // the clip spliced into the hole — see overlayCoveredRanges.
+  const effectiveCuts = [...cuts, ...overlayCoveredRanges(edl)];
 
-  if (cuts.length && Number.isFinite(recordingStartedAtMs)) {
+  if ((effectiveCuts.length || inserts.length) && Number.isFinite(recordingStartedAtMs)) {
     try {
+      // Inserted material is re-encoded to match what is already in the playlist, so the profile
+      // is read off the playlist's own segments rather than assumed. Falls back to the recorder's
+      // frame rate and 1080p if the probe fails — better than refusing to air a booked clip.
+      const profile = inserts.length
+        ? await txSegmentProfile(sessionDir, eligibleSegments, targetDuration)
+        : null;
+
       const edited = await applyEdlToSegments({
         segments: eligibleSegments,
-        cuts,
+        cuts: effectiveCuts,
+        inserts,
         sessionDir,
         recordingStartedAtMs,
         targetDurationSeconds: targetDuration,
         ffmpegPath,
+        width: profile?.width ?? 1920,
+        height: profile?.height ?? 1080,
+        frameRate: profile?.frameRate ?? 25,
         onTrimError: (fileName, error) => {
           console.error(`Air EDL: could not trim '${fileName}', airing it whole:`, error.message);
+        },
+        onInsertError: (insert, error) => {
+          console.error(`Air EDL: could not prepare inserted clip '${insert.name}', leaving the live alone:`, error.message);
         },
       });
       if (edited.length) entries = edited;
@@ -799,16 +825,23 @@ async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited, delaySe
   const lines = [
     "#EXTM3U",
     "#EXT-X-VERSION:3",
-    // Trimmed substitutes are shorter than a whole segment, never longer, so the recorder's
-    // segment length remains the ceiling the spec requires this to be.
-    `#EXT-X-TARGETDURATION:${targetDuration}`,
+    // Taken from the longest entry actually listed, which the spec requires this to be at least as
+    // large as. Trimmed substitutes are only ever shorter than a whole segment, so the recorder's
+    // own segment length used to be a safe ceiling — but an inserted clip's pieces are cut on
+    // keyframes and can land slightly over it, and a playlist that under-declares this is
+    // malformed.
+    `#EXT-X-TARGETDURATION:${Math.max(targetDuration, ...entries.map((entry) => Math.ceil(entry.durationSeconds)))}`,
     // The storage quota's rolling-buffer trim (trimActiveSessionSegments) can delete the earliest
     // .ts segments out from under a still-recording session, so the first listed segment's index
     // is no longer reliably 0 — MEDIA-SEQUENCE must track whatever segment is actually first here,
     // per the HLS spec, or players/ffmpeg's hls demuxer will mis-map segment numbering.
     `#EXT-X-MEDIA-SEQUENCE:${eligibleSegments[0].index}`,
     "#EXT-X-PLAYLIST-TYPE:EVENT",
-    ...entries.flatMap((entry) => [`#EXTINF:${entry.durationSeconds.toFixed(6)},`, entry.fileName]),
+    ...entries.flatMap((entry, index) => [
+      ...(isTimelineBreak(entries[index - 1], entry) ? ["#EXT-X-DISCONTINUITY"] : []),
+      `#EXTINF:${entry.durationSeconds.toFixed(6)},`,
+      entry.fileName,
+    ]),
   ];
 
   if (ffmpegExited) {
@@ -817,6 +850,59 @@ async function writeTxPlaylist(sessionDir, targetDuration, ffmpegExited, delaySe
 
   await fs.promises.writeFile(path.join(sessionDir, TX_LIVE_PLAYLIST_NAME), lines.join("\n") + "\n", "utf8");
   return true;
+}
+
+/**
+ * Whether the media timeline breaks between two consecutive playlist entries, which is what
+ * #EXT-X-DISCONTINUITY exists to declare.
+ *
+ * The recorder's own segments are written by one continuous HLS muxer, so consecutive indices carry
+ * consecutive timestamps and need no marker. Everything else does: an inserted clip is encoded
+ * separately and starts its own timeline, a trimmed substitute is re-encoded with its own, and a
+ * cut that drops whole segments leaves a jump between the indices either side of it.
+ *
+ * Without the marker the demuxer keeps the previous timebase and meets timestamps that do not
+ * follow from it — it waits for frames that will never come, then drops what it has. On air that is
+ * the picture hesitating, stalling and stuttering across the join, which is exactly what a spliced
+ * clip did before this existed. The same omission affected cuts, quietly, for as long as they have.
+ */
+function isTimelineBreak(previous, entry) {
+  if (!previous) return false;
+  // Different timelines entirely — live to clip, clip to live, or either to a trimmed substitute.
+  if (previous.group !== entry.group) return true;
+  // Same timeline, but not the next piece of it: a cut has dropped what sat between them.
+  return entry.seq !== previous.seq + 1;
+}
+
+/**
+ * The video profile of the playlist's own segments, cached for the life of the process.
+ *
+ * Read from a real .ts rather than from the recorder's configuration because the recording leg
+ * stream-copies its video: the geometry on disk is whatever the SDI source produced, which is the
+ * only thing an inserted clip has to match. Probing one segment is enough — the muxer settings do
+ * not change mid-session — and this is called from the once-a-second playlist rewrite.
+ */
+const txProfileCache = new Map();
+
+async function txSegmentProfile(sessionDir, segments, targetDuration) {
+  if (txProfileCache.has(sessionDir)) return txProfileCache.get(sessionDir);
+  if (!segments.length) return null;
+
+  try {
+    const probed = await probeSegment(path.join(sessionDir, segments[0].fileName));
+    if (!probed?.videoWidth || !probed?.videoHeight) return null;
+
+    const profile = {
+      width: probed.videoWidth,
+      height: probed.videoHeight,
+      frameRate: probed.videoFrameRate || 25,
+    };
+    txProfileCache.set(sessionDir, profile);
+    return profile;
+  } catch {
+    // Unreadable segment — the caller falls back to 1080p25 rather than dropping the clip.
+    return null;
+  }
 }
 
 // A session's emerald-tx-live.m3u8 only gets kept in sync with its .ts segments (and eventually

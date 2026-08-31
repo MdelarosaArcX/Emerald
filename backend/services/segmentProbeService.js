@@ -43,7 +43,7 @@ async function probeSegment(filePath) {
     const ffprobePath = normalizeFfprobePath();
     const output = await runFfprobe(ffprobePath, [
       "-v", "error",
-      "-show_entries", "stream=codec_type,codec_name,sample_rate,channels:format=duration",
+      "-show_entries", "stream=codec_type,codec_name,sample_rate,channels,width,height,r_frame_rate:format=duration",
       "-of", "json",
       filePath,
     ]);
@@ -135,7 +135,21 @@ function parseResult(json) {
     audioCodec: audioStream?.codec_name ?? null,
     audioSampleRate: audioStream?.sample_rate ? Number.parseInt(audioStream.sample_rate, 10) : null,
     audioChannels: audioStream?.channels ?? null,
+    // Geometry of what is actually in the file. Anything spliced into the same playlist has to be
+    // encoded to match it — see airEdlService.buildInsertSegments.
+    videoWidth: videoStream?.width ?? null,
+    videoHeight: videoStream?.height ?? null,
+    videoFrameRate: parseFrameRate(videoStream?.r_frame_rate),
   };
+}
+
+/** ffprobe reports frame rate as a rational string ("25/1"); callers want a number. */
+function parseFrameRate(value) {
+  if (typeof value !== "string") return null;
+  const [numerator, denominator] = value.split("/").map(Number);
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null;
+  const rate = numerator / denominator;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
 function normalizeFfprobePath() {

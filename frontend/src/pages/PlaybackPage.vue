@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import PreviewPlayer from "../components/PreviewPlayer.vue";
 import CanvasWorkspace from "../components/CanvasWorkspace.vue";
 import SessionPlaybackDeck from "../components/SessionPlaybackDeck.vue";
+import PlaybackLogPanel from "../components/PlaybackLogPanel.vue";
+import PlaybackStatusPanel from "../components/PlaybackStatusPanel.vue";
 import { useRecorderStore } from "../stores/recorder";
 import { useSessionPlaybackStore } from "../stores/sessionPlayback";
 
@@ -10,6 +12,11 @@ const recorder = useRecorderStore();
 const sessionPlayback = useSessionPlaybackStore();
 const refreshHandle = ref<number | null>(null);
 const librarySplitView = ref(false);
+
+// Same two-tab arrangement as the Capture page's media deck: the browser, or the status and log
+// console for what is going out.
+type MediaTab = "browser" | "logs";
+const mediaTab = ref<MediaTab>("browser");
 
 // Scopes the Media Browser's clip list to whichever folder is selected in the Playback Deck's
 // Recording Folder dropdown — showing everything when none is selected yet.
@@ -101,7 +108,20 @@ function formatDate(value: string) {
 <template>
   <section class="workspace-grid">
     <section class="deck media-deck" aria-label="Media browser">
-      <span class="deck-tab">Media Browser</span>
+      <div class="deck-tabs">
+        <button
+          class="deck-tab"
+          :class="{ inactive: mediaTab !== 'browser' }"
+          @click="mediaTab = 'browser'"
+        >Media Browser</button>
+        <button
+          class="deck-tab"
+          :class="{ inactive: mediaTab !== 'logs' }"
+          @click="mediaTab = 'logs'"
+        >Playback Logs</button>
+      </div>
+
+      <template v-if="mediaTab === 'browser'">
       <PreviewPlayer
         :src="libraryPreviewUrl"
         variant="library"
@@ -122,6 +142,11 @@ function formatDate(value: string) {
         :split-view="librarySplitView"
         @select="recorder.selectRecording"
       />
+      </template>
+      <template v-else>
+        <PlaybackStatusPanel />
+        <PlaybackLogPanel />
+      </template>
     </section>
 
     <section class="deck capture-deck" aria-label="Playback deck">
